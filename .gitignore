@@ -1,1 +1,32 @@
 venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.log
+*.env
+*.DS_Store
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+# Pytest cache
+.pytest_cache/
+# Coverage reports
+.coverage
+# Mypy cache
+.mypy_cache/
+# Pyre type checker
+.pyre/
+# PyCharm project files
+.idea/
+# Visual Studio Code settings
+.vscode/
+# PyInstaller
+# If you use PyInstaller, you might want to ignore the build and dist directories
+build/
+dist/
+# Cython debug symbols
+cython_debug/
+# Local configuration files
+*.local
