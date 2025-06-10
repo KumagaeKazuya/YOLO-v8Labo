@@ -1,62 +1,89 @@
 from ultralytics import YOLO
 import cv2
 import numpy as np
+import threading
 
-# RTSPストリームのURL（環境に合わせて書き換えてください）
-rtsp_url = "rtsp://6199:4003@192.168.100.183/live"
+# ✅ RTSPのURL（自分のカメラに置き換えてください）
+RTSP_URL = "rtsp://6199:4003@192.168.100.183/live"
 
-# モデル読み込み
-model = YOLO("yolov8n-pose.pt")
+# ✅ カメラをスレッドで読み続けるクラス（常に最新フレームを保持）
+class VideoCaptureThread:
+    def __init__(self, src):
+        self.cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+        self.ret, self.frame = self.cap.read()
+        self.lock = threading.Lock()
+        self.running = True
+        self.thread = threading.Thread(target=self.update, daemon=True)
+        self.thread.start()
 
-# RTSPストリームから映像取得
-cap = cv2.VideoCapture(rtsp_url)
+    def update(self):
+        while self.running:
+            ret, frame = self.cap.read()
+            if not ret:
+                continue
+            with self.lock:
+                self.ret, self.frame = ret, frame
 
+    def read(self):
+        with self.lock:
+            return self.ret, self.frame.copy()
+
+    def stop(self):
+        self.running = False
+        self.thread.join()
+        self.cap.release()
+
+# ✅ 人が「寝ている」か判定する関数
 def is_lying_down(keypoints, threshold=30):
-    if keypoints.shape[0] < 17:
+    try:
+        ls, rs = keypoints[5], keypoints[6]   # 左右の肩
+        lh, rh = keypoints[11], keypoints[12] # 左右の腰
+
+        # 中心点を計算
+        shoulder_mid = (ls + rs) / 2
+        hip_mid = (lh + rh) / 2
+
+        dx = hip_mid[0] - shoulder_mid[0]
+        dy = hip_mid[1] - shoulder_mid[1]
+        angle = abs(np.arctan2(dy, dx) * 180 / np.pi)
+
+        return angle < threshold
+    except IndexError:
         return False
 
-    # COCOキーポイント: 左肩5, 右肩6, 左腰11, 右腰12
-    ls, rs = keypoints[5], keypoints[6]
-    lh, rh = keypoints[11], keypoints[12]
+# ✅ モデル読み込み（nanoモデルが高速）
+model = YOLO("yolov8n-pose.pt")
 
-    shoulder_mid = (ls + rs) / 2
-    hip_mid = (lh + rh) / 2
-
-    dx = hip_mid[0] - shoulder_mid[0]
-    dy = hip_mid[1] - shoulder_mid[1]
-
-    angle = np.arctan2(dy, dx) * 180 / np.pi
-    angle = abs(angle)
-
-    return angle < threshold
+# ✅ カメラ起動（スレッド）
+stream = VideoCaptureThread(RTSP_URL)
 
 while True:
-    ret, frame = cap.read()
+    ret, frame = stream.read()
     if not ret:
-        print("フレーム取得失敗。RTSP接続やネットワークを確認してください。")
-        break
+        continue
 
-    results = model(frame)
+    # YOLOv8 Pose 推論（入力サイズ小さめで高速化）
+    results = model(frame, imgsz=384)
 
     for result in results:
-        keypoints_list = result.keypoints.xy.cpu().numpy()
-
-        if keypoints_list.shape[0] == 0:
-            continue  # 検出なしスキップ
+        if result.keypoints is None:
+            continue
+        keypoints_list = result.keypoints.xy.cpu().numpy()  # (人数, 17, 2)
 
         for keypoints in keypoints_list:
-            if keypoints.shape[0] < 17:
-                continue  # キーポイント不足スキップ
+            if keypoints.shape[0] < 13:  # 必須キーポイントが不足していたらスキップ
+                continue
 
-            person_is_lying = is_lying_down(keypoints)
-            color = (0, 0, 255) if person_is_lying else (0, 255, 0)
+            is_lying = is_lying_down(keypoints)
+            color = (0, 0, 255) if is_lying else (0, 255, 0)
 
+            # キーポイント描画
             for x, y in keypoints:
                 cv2.circle(frame, (int(x), int(y)), 4, color, -1)
 
-    cv2.imshow("Pose Detection (Lie Detection)", frame)
-    if cv2.waitKey(1) == ord('q'):
+    cv2.imshow("YOLOv8 Pose RTSP View", frame)
+    if cv2.waitKey(1) == ord("q"):
         break
 
-cap.release()
+stream.stop()
 cv2.destroyAllWindows()
