@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import time
 import math
-from scipy.spatial.distance import cdist
+from scipy.interpolate import splprep, splev  # これがsmooth_curveで必要です
 
 RTSP_URL = "rtsp://6199:4003@192.168.100.183/live"
 model = YOLO("yolov8n-pose.pt")
@@ -13,15 +13,11 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
 prev_time = time.time()
-prev_centers = []
 frame_count = 0
 
 last_keypoints_all = []
 last_centers = []
 last_bboxes = []
-
-STABILITY_THRESHOLD = 3  # 安定判定のフレーム数
-stability_counters = {}
 
 def get_angle(p1, p2):
     dx = p2[0] - p1[0]
@@ -35,14 +31,24 @@ def is_lying_down(keypoints):
         right_shoulder = keypoints[6]
         left_hip = keypoints[11]
         right_hip = keypoints[12]
-
         shoulder_center = (left_shoulder + right_shoulder) / 2
         hip_center = (left_hip + right_hip) / 2
-
         angle = get_angle(shoulder_center, hip_center)
         return angle < 30 or angle > 150
     except:
         return False
+
+def smooth_curve(points, smoothness=0):
+    # points: Nx2 ndarray
+    x = points[:, 0]
+    y = points[:, 1]
+    # スプライン補間パラメータ作成、s=0はデータを通る曲線
+    tck, u = splprep([x, y], s=smoothness)
+    # 補間点数を増やす（100点で滑らかに）
+    unew = np.linspace(0, 1.0, 100)
+    out = splev(unew, tck)
+    curve = np.array([out[0], out[1]]).T.astype(np.int32)
+    return curve
 
 while True:
     ret, frame = cap.read()
@@ -93,12 +99,14 @@ while True:
         centers = last_centers
         bboxes = last_bboxes
 
+    # FPS表示
     current_time = time.time()
     fps = 1 / (current_time - prev_time)
     prev_time = current_time
     cv2.putText(frame, f"FPS: {fps:.2f}", (20, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
 
+    # 検出結果描画
     for bbox, kps in zip(bboxes, keypoints_all):
         x1, y1, x2, y2 = map(int, bbox)
 
@@ -109,7 +117,6 @@ while True:
             label = "Awake"
             color = (0, 255, 0)  # 緑
 
-        # ラベル背景描画
         (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
         cv2.rectangle(frame, (x1, y1 - h - 10), (x1 + w, y1), color, -1)
         cv2.putText(frame, label, (x1, y1 - 5),
@@ -121,6 +128,29 @@ while True:
             px, py = int(point[0]), int(point[1])
             cv2.circle(frame, (px, py), 4, color, -1)
 
+    # === 分割線の描画 ===
+    height, width = frame.shape[:2]
+    line1 = np.array([
+        [0, int(height * 0.2925)],
+        [int(width * 0.25), int(height * 0.215)],
+        [int(width * 0.5), int(height * 0.19)],
+        [int(width * 0.75), int(height * 0.2085)],
+        [width, int(height * 0.275)]
+    ], np.int32)
+    line2 = np.array([
+        [0, int(height * 0.44)],
+        [int(width * 0.25), int(height * 0.415)],
+        [int(width * 0.5), int(height * 0.40)],
+        [int(width * 0.75), int(height * 0.415)],
+        [width, int(height * 0.44)]
+    ], np.int32)
+
+    smooth_line1 = smooth_curve(line1, smoothness=0)
+    smooth_line2 = smooth_curve(line2, smoothness=0)
+    cv2.polylines(frame, [smooth_line1], isClosed=False, color=(0, 0, 255), thickness=3)
+    cv2.polylines(frame, [smooth_line2], isClosed=False, color=(0, 0, 255), thickness=3)
+
+    # 表示と終了キー処理
     cv2.imshow("Pose Sleep Detection", frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
