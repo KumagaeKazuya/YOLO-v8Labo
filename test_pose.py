@@ -2,74 +2,48 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 import time
+import math
 from scipy.spatial.distance import cdist
 
-# RTSP URL（例）
 RTSP_URL = "rtsp://6199:4003@192.168.100.183/live"
-
-# モデル読み込み
 model = YOLO("yolov8n-pose.pt")
 
-# 解像度設定 & RTSP接続
 cap = cv2.VideoCapture(RTSP_URL)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-# FPS & ID追跡用
 prev_time = time.time()
 prev_centers = []
-prev_ids = []
-next_id = 0
 frame_count = 0
 
-# 前回の検出結果を保存
 last_keypoints_all = []
 last_centers = []
-last_ids = []
+last_bboxes = []
 
-# ------------------------
-# IDの割り当て関数（距離しきい値を拡大）
-# ------------------------
-def assign_ids(current_centers, previous_centers, previous_ids, threshold=80):
-    global next_id
-    ids = []
+STABILITY_THRESHOLD = 3  # 安定判定のフレーム数
+stability_counters = {}
 
-    if len(previous_centers) == 0:
-        for _ in current_centers:
-            ids.append(next_id)
-            next_id += 1
-        return ids, current_centers
+def get_angle(p1, p2):
+    dx = p2[0] - p1[0]
+    dy = p2[1] - p1[1]
+    angle = math.degrees(math.atan2(dy, dx))
+    return abs(angle)
 
-    distances = cdist(current_centers, previous_centers)
-    for i, row in enumerate(distances):
-        min_idx = np.argmin(row)
-        if row[min_idx] < threshold:
-            ids.append(previous_ids[min_idx])
-        else:
-            ids.append(next_id)
-            next_id += 1
-
-    return ids, current_centers
-
-# ------------------------
-# 姿勢の角度判定関数（寝ている判定など任意）
-# ------------------------
-def is_lying_down(keypoints, threshold=30):
+def is_lying_down(keypoints):
     try:
-        ls, rs = keypoints[5], keypoints[6]
-        lh, rh = keypoints[11], keypoints[12]
-        shoulder_mid = (ls + rs) / 2
-        hip_mid = (lh + rh) / 2
-        dx = hip_mid[0] - shoulder_mid[0]
-        dy = hip_mid[1] - shoulder_mid[1]
-        angle = abs(np.arctan2(dy, dx) * 180 / np.pi)
-        return angle < threshold
+        left_shoulder = keypoints[5]
+        right_shoulder = keypoints[6]
+        left_hip = keypoints[11]
+        right_hip = keypoints[12]
+
+        shoulder_center = (left_shoulder + right_shoulder) / 2
+        hip_center = (left_hip + right_hip) / 2
+
+        angle = get_angle(shoulder_center, hip_center)
+        return angle < 30 or angle > 150
     except:
         return False
 
-# ------------------------
-# メインループ
-# ------------------------
 while True:
     ret, frame = cap.read()
     if not ret:
@@ -78,62 +52,76 @@ while True:
     frame_count += 1
     keypoints_all = []
     centers = []
-    ids = []
+    bboxes = []
 
-    # 推論は 3フレームに1回のみ実施（疑似FPS向上）
+    # 3フレームごとに検出
     if frame_count % 3 == 0:
         results = model(frame)
+
         for result in results:
-            if result.keypoints is None:
+            if result.keypoints is None or result.boxes is None:
                 continue
+
             keypoints_list = result.keypoints.xy.cpu().numpy()
-            for kps in keypoints_list:
-                # 改善案③：中心点を安定した複数キーポイントから計算
+            boxes = result.boxes.xyxy.cpu().numpy()
+            confs = result.boxes.conf.cpu().numpy()
+
+            for kps, box, conf in zip(keypoints_list, boxes, confs):
+                if conf < 0.5:
+                    continue
+
                 selected_indices = [0, 5, 6, 11, 12]
                 pts = [kps[i] for i in selected_indices if i < len(kps)]
                 if len(pts) == 0:
                     continue
+
                 center = np.mean(pts, axis=0)
                 keypoints_all.append(kps)
                 centers.append(center)
-        
+                bboxes.append(box)
+
         if len(centers) > 0:
-            ids, prev_centers = assign_ids(centers, prev_centers, prev_ids)
-            prev_ids = ids
             last_keypoints_all = keypoints_all
             last_centers = centers
-            last_ids = ids
+            last_bboxes = bboxes
         else:
-            # 推論失敗時は前フレームを保持
             keypoints_all = last_keypoints_all
             centers = last_centers
-            ids = last_ids
+            bboxes = last_bboxes
     else:
-        # 推論スキップ時は前回の推論結果を使い回す
         keypoints_all = last_keypoints_all
         centers = last_centers
-        ids = last_ids
+        bboxes = last_bboxes
 
-    # FPS計測
     current_time = time.time()
     fps = 1 / (current_time - prev_time)
     prev_time = current_time
     cv2.putText(frame, f"FPS: {fps:.2f}", (20, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
 
-    # 表示：関節 + ID + 判定
-    for kps, pid in zip(keypoints_all, ids):
-        is_lying = is_lying_down(kps)
-        color = (0, 0, 255) if is_lying else (0, 255, 0)
+    for bbox, kps in zip(bboxes, keypoints_all):
+        x1, y1, x2, y2 = map(int, bbox)
 
-        for x, y in kps:
-            cv2.circle(frame, (int(x), int(y)), 4, color, -1)
+        if is_lying_down(kps):
+            label = "Sleeping"
+            color = (0, 0, 255)  # 赤
+        else:
+            label = "Awake"
+            color = (0, 255, 0)  # 緑
 
-        center_x, center_y = np.mean(kps[:, 0]), np.mean(kps[:, 1])
-        cv2.putText(frame, f"ID:{pid}", (int(center_x), int(center_y - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        # ラベル背景描画
+        (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
+        cv2.rectangle(frame, (x1, y1 - h - 10), (x1 + w, y1), color, -1)
+        cv2.putText(frame, label, (x1, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
 
-    cv2.imshow("Pose Tracking", frame)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+
+        for point in kps:
+            px, py = int(point[0]), int(point[1])
+            cv2.circle(frame, (px, py), 4, color, -1)
+
+    cv2.imshow("Pose Sleep Detection", frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
