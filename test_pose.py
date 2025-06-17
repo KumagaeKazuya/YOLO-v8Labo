@@ -131,18 +131,18 @@ while True:
     # === 分割線の描画 ===
     height, width = frame.shape[:2]
     line1 = np.array([
-        [0, int(height * 0.2925)],
-        [int(width * 0.25), int(height * 0.215)],
-        [int(width * 0.5), int(height * 0.19)],
-        [int(width * 0.75), int(height * 0.2085)],
-        [width, int(height * 0.275)]
+        [0, int(height * 0.425)],
+        [int(width * 0.25), int(height * 0.385)],
+        [int(width * 0.5), int(height * 0.375)],
+        [int(width * 0.75), int(height * 0.385)],
+        [width, int(height * 0.425)]
     ], np.int32)
     line2 = np.array([
-        [0, int(height * 0.44)],
-        [int(width * 0.25), int(height * 0.415)],
-        [int(width * 0.5), int(height * 0.40)],
-        [int(width * 0.75), int(height * 0.415)],
-        [width, int(height * 0.44)]
+        [0, int(height * 0.56)],
+        [int(width * 0.25), int(height * 0.575)],
+        [int(width * 0.5), int(height * 0.59)],
+        [int(width * 0.75), int(height * 0.5825)],
+        [width, int(height * 0.57)]
     ], np.int32)
 
     smooth_line1 = smooth_curve(line1, smoothness=0)
