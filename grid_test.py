@@ -1,89 +1,148 @@
+from ultralytics import YOLO
 import cv2
 import numpy as np
-from ultralytics import YOLO
-from PIL import Image, ImageDraw, ImageFont
-import os
+import time
+import math
 
-# 日本語ラベル
-keypoint_labels_ja = [
-    '鼻', '左目', '右目', '左耳', '右耳',
-    '左肩', '右肩', '左ひじ', '右ひじ',
-    '左手首', '右手首', '左腰', '右腰',
-    '左ひざ', '右ひざ', '左足首', '右足首'
-]
+RTSP_URL = "rtsp://6199:4003@192.168.100.183/live"
+model = YOLO("yolov8m-pose.pt")
 
-# フォント設定（macOS用）
-font_path = "/System/Library/Fonts/ヒラギノ角ゴシック W5.ttc"
-if not os.path.exists(font_path):
-    raise FileNotFoundError(f"指定されたフォントファイルが見つかりません: {font_path}")
-font = ImageFont.truetype(font_path, size=16)
+cap = cv2.VideoCapture(RTSP_URL)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-# モデルと動画読み込み
-model = YOLO('yolov8n-pose.pt')
-video_path = "video.mp4"
-cap = cv2.VideoCapture(video_path)
-
-# 出力動画設定
-save_output = True
-output_path = "pose_output.mp4"
-fps = cap.get(cv2.CAP_PROP_FPS)
-w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-if save_output:
-    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-
-# グリッド設定
-cols = 3
-rows = 2
-cell_w = w // cols
-cell_h = h // rows
-
-# フレーム処理ループ
+prev_time = time.time()
 frame_count = 0
-while cap.isOpened():
+last_keypoints_all, last_centers, last_bboxes = [], [], []
+
+# カメラ補正用
+K = None
+dist_coeffs = None
+new_K = None
+map1 = None
+map2 = None
+
+def init_camera_params(w, h):
+    global K, dist_coeffs, new_K, map1, map2
+    fx = fy = w * 0.8
+    cx = w / 2
+    cy = h / 2
+    K = np.array([[fx, 0, cx],
+                [0, fy, cy],
+                [0, 0, 1]], dtype=np.float32)
+    dist_coeffs = np.array([-0.3, 0.1, 0.0, 0.0, 0.0], dtype=np.float32)
+    new_K, _ = cv2.getOptimalNewCameraMatrix(K, dist_coeffs, (w, h), 1)
+    map1, map2 = cv2.initUndistortRectifyMap(K, dist_coeffs, None, new_K, (w, h), cv2.CV_16SC2)
+
+def undistort_frame(frame):
+    return cv2.remap(frame, map1, map2, interpolation=cv2.INTER_LINEAR)
+
+def get_angle(p1, p2):
+    dx = p2[0] - p1[0]
+    dy = p2[1] - p1[1]
+    return abs(math.degrees(math.atan2(dy, dx)))
+
+def is_lying_down(keypoints):
+    try:
+        shoulder_center = (keypoints[5] + keypoints[6]) / 2
+        hip_center = (keypoints[11] + keypoints[12]) / 2
+        angle = get_angle(shoulder_center, hip_center)
+        return angle < 35 or angle > 145
+    except:
+        return False
+
+def draw_horizontal_line(img, y_pos, color=(255, 255, 255), thickness=2):
+    height, width = img.shape[:2]
+    cv2.line(img, (0, y_pos), (width, y_pos), color, thickness)
+
+# 分割位置（固定：2本の水平線 → 3分割）
+split_positions = [430, 630]
+
+while True:
     ret, frame = cap.read()
     if not ret:
+        print("Failed to grab frame")
         break
 
-    results = model(frame)
-    img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    draw = ImageDraw.Draw(img_pil)
+    height, width = frame.shape[:2]
+    if K is None:
+        init_camera_params(width, height)
 
-    # グリッド線の描画
-    for i in range(rows):
-        for j in range(cols):
-            x0 = j * cell_w
-            y0 = i * cell_h
-            draw.rectangle([x0, y0, x0 + cell_w, y0 + cell_h], outline=(100, 100, 100))
-            draw.text((x0 + 5, y0 + 5), f"{i},{j}", fill=(100, 100, 100), font=font)
+    frame_undist = undistort_frame(frame)
+    frame_count += 1
 
-    # 人体キーポイント描画と位置特定
-    for result in results:
-        if result.keypoints is None:
-            continue
-        for person_kps in result.keypoints.xy:
-            for i, (x, y) in enumerate(person_kps):
-                if x <= 0 or y <= 0:
+    # --- 分割線（直線）を描画 ---
+    for y in split_positions:
+        draw_horizontal_line(frame_undist, y)
+
+    keypoints_all, centers, bboxes = [], [], []
+    frames_to_process = []
+
+    # --- 分割領域でフレームを分ける ---
+    y_starts = [0] + split_positions
+    y_ends = split_positions + [height]
+    for y_start, y_end in zip(y_starts, y_ends):
+        split_frame = frame_undist[y_start:y_end, :]
+        frames_to_process.append((split_frame, 0, y_start))  # x_offset, y_offset
+
+    # --- 推論処理（3フレームに1回） ---
+    if frame_count % 3 == 0:
+        for f, x_off, y_off in frames_to_process:
+            results = model(f)
+            for result in results:
+                if result.keypoints is None or result.boxes is None:
                     continue
-                col = int(x) // cell_w
-                row = int(y) // cell_h
-                draw.ellipse((x-3, y-3, x+3, y+3), fill=(0, 255, 0))
-                if 0 <= col < cols and 0 <= row < rows:
-                    draw.text((x+5, y-10), f"{keypoint_labels_ja[i]} ({row},{col})", fill=(255, 0, 0), font=font)
+                keypoints_list = result.keypoints.xy.cpu().numpy()
+                boxes = result.boxes.xyxy.cpu().numpy()
+                confs = result.boxes.conf.cpu().numpy()
 
-    # 表示と保存
-    frame = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-    cv2.imshow("YOLOv8 Pose Detection (Video)", frame)
-    if save_output:
-        out.write(frame)
+                for kps, box, conf in zip(keypoints_list, boxes, confs):
+                    if conf < 0.4:
+                        continue
+                    kps[:, 0] += x_off
+                    kps[:, 1] += y_off
+                    box[0::2] += x_off
+                    box[1::2] += y_off
 
+                    selected_indices = [0, 5, 6, 11, 12]
+                    pts = [kps[i] for i in selected_indices if i < len(kps)]
+                    if not pts:
+                        continue
+
+                    keypoints_all.append(kps)
+                    centers.append(np.mean(pts, axis=0))
+                    bboxes.append(box)
+
+        if centers:
+            last_keypoints_all, last_centers, last_bboxes = keypoints_all, centers, bboxes
+        else:
+            keypoints_all, centers, bboxes = last_keypoints_all, last_centers, last_bboxes
+    else:
+        keypoints_all, centers, bboxes = last_keypoints_all, last_centers, last_bboxes
+
+    # --- FPS 表示 ---
+    fps = 1 / (time.time() - prev_time)
+    prev_time = time.time()
+    cv2.putText(frame_undist, f"FPS: {fps:.2f}", (20, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+
+    # --- 描画 ---
+    for bbox, kps in zip(bboxes, keypoints_all):
+        x1, y1, x2, y2 = map(int, bbox)
+        label = "Sleeping" if is_lying_down(kps) else "Awake"
+        color = (0, 0, 255) if label == "Sleeping" else (0, 255, 0)
+        (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
+        cv2.rectangle(frame_undist, (x1, y1 - h - 10), (x1 + w, y1), color, -1)
+        cv2.putText(frame_undist, label, (x1, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
+        cv2.rectangle(frame_undist, (x1, y1), (x2, y2), color, 3)
+        for point in kps:
+            px, py = int(point[0]), int(point[1])
+            cv2.circle(frame_undist, (px, py), 4, color, -1)
+
+    cv2.imshow("Pose Sleep Detection (Undistorted)", frame_undist)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-    frame_count += 1
-
 cap.release()
-if save_output:
-    out.release()
 cv2.destroyAllWindows()
-print(f"検出完了: {frame_count} フレームを処理しました。保存先: {output_path}")

@@ -1,3 +1,4 @@
+#Atomcamの映像をそのまま撮ってくるだけのコード
 import cv2
 # RTSPストリームのURL（必要に応じて変更）
 rtsp_url = "rtsp://6199:4003@192.168.100.183/live"
