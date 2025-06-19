@@ -1,3 +1,5 @@
+# 歪み補正を行い、3分割した領域で推論を行う
+# エリア毎の処理はまだ未実装
 from ultralytics import YOLO
 import cv2
 import numpy as np
