@@ -1,3 +1,4 @@
+# 歪み補正をした上で、４分割のエリアで推論を行う(grid_testのテスト用ファイル)
 from ultralytics import YOLO
 import cv2
 import numpy as np

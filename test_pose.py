@@ -1,3 +1,5 @@
+# 歪み補正を行わずにエリアを３分割して推論するコード
+# エリア毎の処理はまだ未実装
 from ultralytics import YOLO
 import cv2
 import numpy as np
