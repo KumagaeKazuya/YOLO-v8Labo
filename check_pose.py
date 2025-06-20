@@ -98,6 +98,7 @@ while True:
     if frame_count % 3 == 0:
         for i, (f, x_off, y_off) in enumerate(frames_to_process):
             results = model(f)
+            h_split, w_split = f.shape[:2]
             for result in results:
                 if result.keypoints is None or result.boxes is None:
                     continue
@@ -109,8 +110,8 @@ while True:
                     if conf < 0.4:
                         continue
 
-                    kps[:, 0] *= width
-                    kps[:, 1] *= height
+                    kps[:, 0] *= w_split
+                    kps[:, 1] *= h_split
                     kps[:, 0] += x_off
                     kps[:, 1] += y_off
                     box[0::2] += x_off
