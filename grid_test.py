@@ -1,5 +1,5 @@
 # 歪み補正を行い、3分割した領域で推論を行う
-# エリア毎の処理はまだ未実装
+# 分割エリア毎の推論は実装ずみ、ID表示などはなし
 from ultralytics import YOLO
 import cv2
 import numpy as np
@@ -148,3 +148,4 @@ while True:
 
 cap.release()
 cv2.destroyAllWindows()
+
