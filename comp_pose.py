@@ -232,6 +232,7 @@ class DrowsinessDetectionSystem:
 
     def run(self):
         cap = cv2.VideoCapture(self.rtsp_url)
+        # cap = cv2.VideoCapture("任意の動画ファイル")  # デバッグ用の動画ファイルを使用する場合
         if not cap.isOpened():
             logger.error("RTSPカメラに接続できませんでした")
             return

@@ -160,11 +160,106 @@ class DrowsinessDetectionSystem:
             if head_top is not None:
                 cv2.circle(frame, tuple(head_top.astype(int)), 6, (255, 255, 255), -1)
 
-    def run(self):
-        cap = cv2.VideoCapture(self.rtsp_url)
+    '''def run(self):
+        # cap = cv2.VideoCapture(self.rtsp_url) # リアルタイム推論を行う
+        cap = cv2.VideoCapture("video.mp4")  # デバッグ用の動画ファイルを使用する
         if not cap.isOpened():
             logger.error("RTSPカメラに接続できません")
+            return'''
+
+    def run_on_video(self, video_path, save_path="output.av1", result_log="frame_results.csv"):
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logger.error("動画ファイルに接続できません")
             return
+
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        tortal_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        if self.K is None:
+            self.initialize_camera_params(width, height)
+
+        # 保存用ビデオライターの設定
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
+
+        # 結果ログ
+        import csv
+        with open(result_log, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['frame', 'person_id', 'using_phone', 'grid_row', 'grid_col'])
+
+            frame_idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    logger.warning("フレーム取得失敗")
+                    break
+
+                frame_idx += 1
+                frame_undist = self.correct_frame(frame)
+                keypoints_all = []
+                bboxes = []
+
+                # 分割毎の推論
+                y_current = 0
+                for ration in self.split_ratios:
+                    y_start = int(y_current)
+                    y_end = int(y_current + height * ration)
+                    section = frame_undist[y_start:y_end, :]
+
+                    results = self.model(section, conf=self.config['conf_threshold'], verbose=False)
+                    for result in results:
+                        if result.keypoints is None or result.boxes is None:
+                            continue
+
+                        kps_list = result.keypoints.xy.cpu().numpy()
+                        boxes = result.boxes.xyxy.cpu().numpy()
+                        confs = result.boxes.conf.cpu().numpy()
+
+                        for kps, box, conf in zip(kps_list, boxes, confs):
+                            if conf < self.config['conf_threshold']:
+                                continue
+                            kps[:, 1] += y_start
+                            box[1::2] += y_start
+                            keypoints_all.append(kps)
+                            bboxes.append(box)
+                    y_current = y_end
+                x_grid, y_grid = self.calculate_grid_boundaries(width, height, self.split_ratios_cols, self.split_ratios)
+
+                if keypoints_all:
+                    exisiting_persons = {}
+                    for i, (kps, box) in enumerate(zip(keypoints_all, bboxes)):
+                        person_id = self.get_person_id(kps, exisiting_persons)
+                        center = np.mean(kps[:, :2], axis=0)
+                        exisiting_persons[person_id] = center
+
+                        using_phone = self.detect_phone_usage(kps)
+                        using_phone = self.smooth_detection(person_id, using_phone)
+
+                        cx, cy = int(center[0]), int(center[1])
+                        region = self.get_person_region(cx, cy, x_grid, y_grid)
+                        row, col = region if region else (-1, -1)
+
+                        # 結果ログに書き込み
+                        writer.writerow([frame_idx, person_id, using_phone, row, col])
+
+                    self.draw_detection_results(frame_undist, keypoints_all, bboxes, x_grid, y_grid)
+
+                self.draw_monitor_grid(frame_undist, self.split_ratios_cols)
+                out.write(frame_undist)
+
+                cv2.putText(frame_undist, f"Frame: {frame_idx}/{tortal_frames}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+                cv2.imshow("Video Inference", frame_undist)
+
+                if cv2.waitKey(1) & 0xFF == 27:  # ESCキーで終了
+                    break
+        cap.release()
+        out.release()
+        cv2.destroyAllWindows()
+
 
         window_name = "Drowsiness Detection"
         cv2.namedWindow(window_name)
@@ -246,7 +341,12 @@ def main():
     rtsp_url = "rtsp://6199:4003@192.168.100.183/live"
     model_path = "yolov8m-pose.pt"
     detector = DrowsinessDetectionSystem(rtsp_url, model_path)
-    detector.run()
+    video_path = "video.mp4"
+    save_path = "output.avi"
+    log_path = "frame_results.csv"
+
+    detector = DrowsinessDetectionSystem("", model_path)
+    detector.run_on_video(video_path, save_path, log_path)
 
 
 if __name__ == "__main__":
