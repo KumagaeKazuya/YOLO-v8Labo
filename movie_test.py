@@ -144,7 +144,7 @@ while True:
     cv2.polylines(frame, [smooth_line1], isClosed=False, color=(0, 0, 255), thickness=3)
     cv2.polylines(frame, [smooth_line2], isClosed=False, color=(0, 0, 255), thickness=3)
 
-    # === 表示と終了処理 ===
+    # === 表示と終了処理 ===　　　　　　　　
     cv2.imshow("Pose Sleep Detection", frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
