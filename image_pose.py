@@ -231,7 +231,7 @@ class DrowsinessDetectionSystem:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
     def run(self):
-        cap = cv2.VideoCapture(self.rtsp_url)
+        cap = cv2.VideoCapture("video.mp4")
         if not cap.isOpened():
             logger.error("RTSPカメラに接続できませんでした")
             return
