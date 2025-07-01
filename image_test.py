@@ -99,12 +99,18 @@ class DrowsinessDetectionSystem:
             logger.error(f"携帯使用判定エラー: {e}")
             return False
 
-    def draw_monitor_grid(self, img, col_ratios):
+    def draw_monitor_grid(self, img, col_ratios, row_ratios):
         h, w = img.shape[:2]
+        # 縦線(列分割)
         x_current = 0
         for ratio in col_ratios[:-1]:
             x_current += int(w * ratio)
             cv2.line(img, (x_current, 0), (x_current, h), (255, 255, 255), 2)
+        # 横線（行分割）
+        y_current = 0
+        for ratio in self.split_ratios[:-1]:
+            y_current += int(h * ratio)
+            cv2.line(img, (0, y_current), (w, y_current), (255, 255, 255), 2)
 
     def calculate_grid_boundaries(self, w, h, cols, rows):
         x_grid = [0]
@@ -167,7 +173,7 @@ class DrowsinessDetectionSystem:
             logger.error("RTSPカメラに接続できません")
             return'''
 
-    def run_on_video(self, video_path, save_path="output.av1", result_log="frame_results.csv"):
+    def run_on_video(self, video_path, save_path="output.mp4", result_log="frame_results.csv"):
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             logger.error("動画ファイルに接続できません")
@@ -182,8 +188,8 @@ class DrowsinessDetectionSystem:
             self.initialize_camera_params(width, height)
 
         # 保存用ビデオライターの設定
-        fourcc = cv2.VideoWriter_fourcc(*'XVID')
-        out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter("output.mp4", fourcc, fps, (width, height))
 
         # 結果ログ
         import csv
@@ -248,7 +254,7 @@ class DrowsinessDetectionSystem:
 
                     self.draw_detection_results(frame_undist, keypoints_all, bboxes, x_grid, y_grid)
 
-                self.draw_monitor_grid(frame_undist, self.split_ratios_cols)
+                self.draw_monitor_grid(frame_undist, self.split_ratios_cols, self.split_ratios)
                 out.write(frame_undist)
 
                 cv2.putText(frame_undist, f"Frame: {frame_idx}/{tortal_frames}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
@@ -313,11 +319,6 @@ class DrowsinessDetectionSystem:
             else:
                 keypoints_all, bboxes = self.last_keypoints_all, self.last_bboxes
 
-            y_sum = 0
-            for ratio in self.split_ratios[:-1]:
-                y_sum += int(h * ratio)
-                cv2.line(frame_undist, (0, y_sum), (w, y_sum), (255, 255, 255), 2)
-
             self.draw_monitor_grid(frame_undist, self.split_ratios_cols)
             x_grid, y_grid = self.calculate_grid_boundaries(w, h, self.split_ratios_cols, self.split_ratios)
 
@@ -342,7 +343,7 @@ def main():
     model_path = "yolov8m-pose.pt"
     detector = DrowsinessDetectionSystem(rtsp_url, model_path)
     video_path = "video.mp4"
-    save_path = "output.avi"
+    save_path = "output.mp4"
     log_path = "frame_results.csv"
 
     detector = DrowsinessDetectionSystem("", model_path)
