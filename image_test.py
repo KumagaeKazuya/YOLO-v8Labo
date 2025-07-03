@@ -1,8 +1,5 @@
 # image_pose.pyの動画推論用テストファイル
 
-# 動作可能・機能維持版 DrowsinessDetectionSystem
-# ファイル名例: drowsiness_system.py
-
 from ultralytics import YOLO
 import cv2
 import numpy as np
@@ -94,9 +91,36 @@ class DrowsinessDetectionSystem:
             if not all(map(valid, [nose, left_wrist, right_wrist])):
                 return False
             threshold = self.config['phone_distance_threshold']
-            return min(np.linalg.norm(nose - left_wrist), np.linalg.norm(nose - right_wrist)) < threshold
+            dist_left = np.linalg.norm(nose - left_wrist)
+            dist_right = np.linalg.norm(nose - right_wrist)
+
+            if min(dist_left, dist_right) < threshold:
+                return True
+            # 正面でない→背面の可能性として補完
+            return self.detect_phone_usage_back_view(keypoints)
         except Exception as e:
             logger.error(f"携帯使用判定エラー: {e}")
+            return False
+
+    def detect_phone_usage_back_view(self, keypoints):
+        try:
+            threshold = 60
+            neck = keypoints[1][:2]
+            left_wrist = keypoints[9][:2]
+            right_wrist = keypoints[10][:2]
+            left_shoulder = keypoints[5][:2]
+            right_shoulder = keypoints[6][:2]
+
+            def valid(pt):
+                return not np.any(np.isnan(pt)) and not np.allclose(pt, [0, 0])
+            if not all(map(valid, [neck, left_wrist, right_wrist, left_shoulder, right_shoulder])):
+                return False
+
+            dist_left = min(np.linalg.norm(left_wrist - neck), np.linalg.norm(left_wrist - left_shoulder))
+            dist_right = min(np.linalg.norm(right_wrist - neck), np.linalg.norm(right_wrist - right_shoulder))
+            return min(dist_left, dist_right) < threshold
+        except Exception as e:
+            logger.error(f"背面携帯使用検出エラー: {e}")
             return False
 
     def draw_monitor_grid(self, img, col_ratios, row_ratios):
@@ -342,7 +366,7 @@ def main():
     rtsp_url = "rtsp://6199:4003@192.168.100.183/live"
     model_path = "yolov8m-pose.pt"
     detector = DrowsinessDetectionSystem(rtsp_url, model_path)
-    video_path = "video.mp4"
+    video_path = "627lab1.5.mov"
     save_path = "output.mp4"
     log_path = "frame_results.csv"
 
