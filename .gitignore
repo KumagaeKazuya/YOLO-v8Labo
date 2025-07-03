@@ -30,3 +30,10 @@ dist/
 cython_debug/
 # Local configuration files
 *.local627lab1.5.mov
+# 動画ファイルはプロジェクトに含めない
+*.mp4
+*.avi
+*.mov
+
+# csvの分析ファイルはプロジェクトに含めない
+*.csv
