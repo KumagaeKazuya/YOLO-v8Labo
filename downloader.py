@@ -18,5 +18,6 @@ def download_file_from_google_drive(file_id: str, save_dir="input_videos", file_
     file_path = os.path.join(save_dir, file_name)
 
     url = f"https://drive.google.com/uc?id={file_id}"
+
     gdown.download(f"https://drive.google.com/uc?id={file_id}", file_path, quiet=False)
     return file_path
