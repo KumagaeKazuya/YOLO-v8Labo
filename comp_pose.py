@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import time
 import math
-import gdown
+import os
 from collections import defaultdict, deque
 import logging
 
@@ -198,7 +198,7 @@ class DrowsinessDetectionSystem:
             logger.error("RTSPカメラに接続できません")
             return'''
 
-    def run_on_video(self, video_path, save_path="output.mp4", result_log="frame_results.csv"):
+def run_on_video(self, video_path, save_path="output.mp4", result_log="frame_results.csv"):
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             logger.error("動画ファイルに接続できません")
@@ -212,9 +212,15 @@ class DrowsinessDetectionSystem:
         if self.K is None:
             self.initialize_camera_params(width, height)
 
+        # 既存ファイルがある場合は削除
+        if os.path.exists(save_path):
+            os.remove(save_path)
+        if os.path.exists(result_log):
+            os.remove(result_log)
+
         # 保存用ビデオライターの設定
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter("output.mp4", fourcc, fps, (width, height))
+        out = cv2.VideoWriter("input_videos/output.mp4", fourcc, fps, (width, height))
 
         # 結果ログ
         import csv

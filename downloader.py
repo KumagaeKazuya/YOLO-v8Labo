@@ -13,7 +13,7 @@ def download_file_from_google_drive(file_id: str, save_dir="input_videos", file_
         os.makedirs(save_dir)
 
     if file_name is None:
-        file_name = f"{file_id}.mp4"
+        file_name = f"input.mp4"
 
     file_path = os.path.join(save_dir, file_name)
 
