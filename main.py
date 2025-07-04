@@ -15,6 +15,5 @@ def main():
     detector = DrowsinessDetectionSystem("", model_path)
     detector.run_on_video(video_path, save_path, log_path)
 
-
 if __name__ == "__main__":
     main()

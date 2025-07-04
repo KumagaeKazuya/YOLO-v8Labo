@@ -12,7 +12,6 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-
 class DrowsinessDetectionSystem:
     def __init__(self, rtsp_url, model_path="yolov8m-pose.pt"):
         self.rtsp_url = rtsp_url
@@ -367,4 +366,3 @@ def run_on_video(self, video_path, save_path="output.mp4", result_log="frame_res
 
         cap.release()
         cv2.destroyAllWindows()
-
