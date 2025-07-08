@@ -10,7 +10,7 @@ def main():
     google_drive_file_id = "1QaYIFAlXRqcThZU9aLGWWQTCUXs6WJCU"
     video_path = download_file_from_google_drive(google_drive_file_id)
     save_path = "output.mp4"
-    log_path = "frame_results.csv"
+    log_path = "data/frame_results.csv"
 
     detector = DrowsinessDetectionSystem("", model_path)
     detector.run_on_video(video_path, save_path, log_path)
