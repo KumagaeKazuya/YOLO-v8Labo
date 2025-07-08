@@ -1,4 +1,4 @@
-venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -36,4 +36,4 @@ cython_debug/
 *.mov
 
 # csvの分析ファイルはプロジェクトに含めない
-*.csv
+*.csv.venv/
