@@ -1,4 +1,6 @@
-# image_pose.pyの動画推論用テストファイル
+# 映像による推論を行うためのスクリプト
+# このスクリプトは、YOLOv8の姿勢推定モデルを使用して、リアルタイムまたは動画ファイルからの映像に対して姿勢推定を行い、特定の動作検出を行う。
+# python3 scripts/main.pyにて実行
 
 from ultralytics import YOLO
 import cv2

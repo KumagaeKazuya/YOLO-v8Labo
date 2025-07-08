@@ -1,7 +1,7 @@
 # 実行を行うファイル
 
-from comp_pose import DrowsinessDetectionSystem
-from downloader import download_file_from_google_drive
+from scripts.comp_pose import DrowsinessDetectionSystem
+from scripts.downloader import download_file_from_google_drive
 
 def main():
     rtsp_url = "rtsp://6199:4003@192.168.100.183/live"
