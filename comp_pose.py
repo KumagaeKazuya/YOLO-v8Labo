@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class DrowsinessDetectionSystem:
-    def __init__(self, rtsp_url, model_path="yolov8m-pose.pt"):
+    def __init__(self, rtsp_url, model_path="models/yolov8m-pose.pt"):
         self.rtsp_url = rtsp_url
         self.model = YOLO(model_path)
 

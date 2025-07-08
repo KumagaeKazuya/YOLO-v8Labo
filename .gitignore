@@ -36,4 +36,4 @@ cython_debug/
 *.mov
 
 # csvの分析ファイルはプロジェクトに含めない
-*.csv.venv/
+data/*.csv
