@@ -197,7 +197,7 @@ class DrowsinessDetectionSystem:
             logger.error("RTSPカメラに接続できません")
             return'''
 
-def run_on_video(self, video_path, save_path="output.mp4", result_log="data/frame_results.csv"):
+    def run_on_video(self, video_path, save_path="output.mp4", result_log="data/frame_results.csv"):
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             logger.error("動画ファイルに接続できません")
