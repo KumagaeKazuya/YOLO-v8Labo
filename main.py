@@ -5,7 +5,7 @@ from downloader import download_file_from_google_drive
 
 def main():
     rtsp_url = "rtsp://6199:4003@192.168.100.183/live"
-    model_path = "yolov8m-pose.pt"
+    model_path = "models/yolov8m-pose.pt"
     detector = DrowsinessDetectionSystem(rtsp_url, model_path)
     google_drive_file_id = "1QaYIFAlXRqcThZU9aLGWWQTCUXs6WJCU"
     video_path = download_file_from_google_drive(google_drive_file_id)
