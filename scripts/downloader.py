@@ -1,7 +1,7 @@
 import gdown
 import os
 
-def download_file_from_google_drive(file_id: str, save_dir="input_videos", file_name=None):
+def download_file_from_google_drive(file_id: str, save_dir="videos", file_name=None):
     """
     Google Driveからファイルをダウンロードする関数。
     :param file_id: Google DriveのファイルID
@@ -13,11 +13,11 @@ def download_file_from_google_drive(file_id: str, save_dir="input_videos", file_
         os.makedirs(save_dir)
 
     if file_name is None:
-        file_name = f"input.mp4"
+        file_name = "input.mp4"
 
-    file_path = os.path.join(save_dir, file_name)
+    file_path = os.path.join("videos", file_name)
 
     url = f"https://drive.google.com/uc?id={file_id}"
 
-    gdown.download(f"https://drive.google.com/uc?id={file_id}", file_path, quiet=False)
+    gdown.download(url, file_path, quiet=False)
     return file_path
