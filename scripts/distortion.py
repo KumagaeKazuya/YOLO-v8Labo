@@ -150,9 +150,33 @@ class DrowsinessDetectionSystem:
             dist_left = np.linalg.norm(nose - left_wrist)
             dist_right = np.linalg.norm(nose - right_wrist)
 
-            return min(dist_left, dist_right) < threshold
+            if min(dist_left, dist_right) < threshold:
+                return True
+            # 正面でない→背面の可能性として補完
+            return self.detect_phone_usage_back_view(keypoints)
         except Exception as e:
             logger.error(f"携帯使用判定エラー: {e}")
+            return False
+
+    def detect_phone_usage_back_view(self, keypoints):
+        try:
+            threshold = 60
+            neck = keypoints[1][:2]
+            left_wrist = keypoints[9][:2]
+            right_wrist = keypoints[10][:2]
+            left_shoulder = keypoints[5][:2]
+            right_shoulder = keypoints[6][:2]
+
+            def valid(pt):
+                return not np.any(np.isnan(pt)) and not np.allclose(pt, [0, 0])
+            if not all(map(valid, [neck, left_wrist, right_wrist, left_shoulder, right_shoulder])):
+                return False
+
+            dist_left = min(np.linalg.norm(left_wrist - neck), np.linalg.norm(left_wrist - left_shoulder))
+            dist_right = min(np.linalg.norm(right_wrist - neck), np.linalg.norm(right_wrist - right_shoulder))
+            return min(dist_left, dist_right) < threshold
+        except Exception as e:
+            logger.error(f"背面携帯使用検出エラー: {e}")
             return False
 
     def draw_monitor_grid(self, img, col_ratios, row_ratios):
