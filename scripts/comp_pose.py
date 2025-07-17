@@ -15,7 +15,8 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class DrowsinessDetectionSystem:
+# class DrowsinessDetectionSystem:
+class PostureDetectionSystem:
     def __init__(self, rtsp_url, model_path="models/yolov8m-pose.pt"):
         self.rtsp_url = rtsp_url
         self.model = YOLO(model_path)
@@ -300,7 +301,7 @@ class DrowsinessDetectionSystem:
         cv2.destroyAllWindows()
 
 
-        window_name = "Drowsiness Detection"
+        window_name = "PostureDetection"
         cv2.namedWindow(window_name)
         cv2.createTrackbar("Phone Distance", window_name, self.config['phone_distance_threshold'], 200, lambda x: None)
         prev_time = time.time()
