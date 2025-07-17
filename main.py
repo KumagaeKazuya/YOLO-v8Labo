@@ -51,6 +51,5 @@ def main():
         logger.error(f"動画ファイルが見つかりません: {video_path}")
         logger.info("現在のディレクトリにshoot5.mp4があることを確認してください。")
 
-
 if __name__ == "__main__":
     main()

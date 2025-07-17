@@ -82,7 +82,7 @@ class VideoDistortionCorrector:
         return cv2.remap(frame, self.map_x, self.map_y, cv2.INTER_LINEAR)
 
 
-class DrowsinessDetectionSystem:
+class PostureDetectionSystem:
     """居眠り検出システムクラス"""
 
     def __init__(self, model_path="models/yolov8m-pose.pt"):
@@ -304,7 +304,7 @@ class IntegratedVideoProcessor:
 
     def __init__(self, k1=-0.1, strength=1.0, zoom_factor=0.8, model_path="yolov8m-pose.pt"):
         self.corrector = VideoDistortionCorrector(k1, strength, zoom_factor)
-        self.detector = DrowsinessDetectionSystem(model_path)
+        self.detector = PostureDetectionSystem(model_path)
 
     def process_video(self, input_path, output_path, result_log="frame_results.csv", 
                     show_preview=True, apply_correction=True):
