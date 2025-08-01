@@ -14,6 +14,307 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class EnhancedCSVLogger:
+    """機械学習用拡張CSVロガー"""
+
+    def __init__(self, csv_path="enhanced_detection_log.csv"):
+        self.csv_path = csv_path
+        self.csv_file = None
+        self.csv_writer = None
+        self.start_time = time.time()
+        self.prev_keypoints = {}  # track_id -> previous keypoints for motion calculation
+
+        # CSV ヘッダー定義
+        self.headers = [
+            # 基本情報
+            "timestamp", "frame_idx", "relative_time_sec", "frame_interval_ms",
+
+            # 人物識別情報
+            "person_id", "track_confidence", "detection_confidence",
+
+            # 位置情報
+            "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2", 
+            "bbox_width", "bbox_height", "bbox_area",
+            "center_x", "center_y", "grid_row", "grid_col",
+
+            # 行動判定
+            "using_phone", "phone_detection_confidence", "smoothed_phone_usage",
+            "phone_detection_method",  # "front_view", "back_view", "failed"
+
+            # キーポイント座標 (17点 x 3座標 = 51列)
+            *[f"kp_{i}_{coord}" for i in range(17) for coord in ["x", "y", "conf"]],
+
+            # 動作特徴量
+            "movement_speed_px_per_frame", "pose_change_magnitude", 
+            "head_movement_speed", "hand_movement_speed",
+            "wrist_to_face_dist_left", "wrist_to_face_dist_right", "min_wrist_face_dist",
+
+            # 姿勢分析
+            "head_pose_angle", "shoulder_width", "torso_lean_angle",
+            "left_arm_angle", "right_arm_angle",
+
+            # 画像品質・環境要因
+            "frame_brightness", "frame_contrast", "blur_score", "noise_level",
+
+            # 時系列特徴
+            "consecutive_phone_frames", "phone_state_duration_sec",
+            "position_stability", "tracking_quality",
+
+            # アノテーション用
+            "manual_label_phone", "manual_label_posture", "manual_label_attention",
+            "annotation_confidence", "annotator_id", "review_required",
+
+            # メタデータ
+            "video_source", "processing_version", "model_version", "notes"
+        ]
+
+        self.init_csv()
+
+    def init_csv(self):
+        """CSV ファイルを初期化"""
+        try:
+            self.csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
+            self.csv_writer = csv.writer(self.csv_file)
+            self.csv_writer.writerow(self.headers)
+            logger.info(f"拡張CSVログを初期化: {self.csv_path}")
+        except Exception as e:
+            logger.error(f"CSV初期化エラー: {e}")
+
+    def calculate_keypoint_features(self, keypoints, track_id):
+        """キーポイントから特徴量を計算"""
+        features = {}
+
+        try:
+            # キーポイントのインデックス定義
+            kp_idx = {
+                'nose': 0, 'left_eye': 1, 'right_eye': 2, 'left_ear': 3, 'right_ear': 4,
+                'left_shoulder': 5, 'right_shoulder': 6, 'left_elbow': 7, 'right_elbow': 8,
+                'left_wrist': 9, 'right_wrist': 10, 'left_hip': 11, 'right_hip': 12,
+                'left_knee': 13, 'right_knee': 14, 'left_ankle': 15, 'right_ankle': 16
+            }
+
+            # 有効なキーポイントのみ取得
+            def get_valid_point(idx):
+                if idx >= len(keypoints) or keypoints[idx][2] < 0.3:  # 信頼度チェック
+                    return None
+                return keypoints[idx][:2]
+
+            # 基本的な距離計算
+            nose = get_valid_point(kp_idx['nose'])
+            left_wrist = get_valid_point(kp_idx['left_wrist'])
+            right_wrist = get_valid_point(kp_idx['right_wrist'])
+            left_shoulder = get_valid_point(kp_idx['left_shoulder'])
+            right_shoulder = get_valid_point(kp_idx['right_shoulder'])
+
+            # 手首-顔の距離
+            if nose is not None and left_wrist is not None:
+                features['wrist_to_face_dist_left'] = np.linalg.norm(nose - left_wrist)
+            else:
+                features['wrist_to_face_dist_left'] = -1
+
+            if nose is not None and right_wrist is not None:
+                features['wrist_to_face_dist_right'] = np.linalg.norm(nose - right_wrist)
+            else:
+                features['wrist_to_face_dist_right'] = -1
+
+            features['min_wrist_face_dist'] = min(
+                features['wrist_to_face_dist_left'] if features['wrist_to_face_dist_left'] > 0 else float('inf'),
+                features['wrist_to_face_dist_right'] if features['wrist_to_face_dist_right'] > 0 else float('inf')
+            )
+            if features['min_wrist_face_dist'] == float('inf'):
+                features['min_wrist_face_dist'] = -1
+
+            # 肩幅
+            if left_shoulder is not None and right_shoulder is not None:
+                features['shoulder_width'] = np.linalg.norm(left_shoulder - right_shoulder)
+            else:
+                features['shoulder_width'] = -1
+
+            # 動作速度計算（前フレームとの比較）
+            if track_id in self.prev_keypoints:
+                prev_kp = self.prev_keypoints[track_id]
+                movement_diffs = []
+                head_movement = 0
+                hand_movement = 0
+
+                # 全体的な動き
+                for i, (curr, prev) in enumerate(zip(keypoints, prev_kp)):
+                    if curr[2] > 0.3 and prev[2] > 0.3:  # 両方とも有効
+                        diff = np.linalg.norm(curr[:2] - prev[:2])
+                        movement_diffs.append(diff)
+
+                        # 頭部の動き（鼻）
+                        if i == kp_idx['nose']:
+                            head_movement = diff
+                        # 手の動き（手首）
+                        elif i in [kp_idx['left_wrist'], kp_idx['right_wrist']]:
+                            hand_movement = max(hand_movement, diff)
+
+                features['movement_speed_px_per_frame'] = np.mean(movement_diffs) if movement_diffs else 0
+                features['pose_change_magnitude'] = np.sum(movement_diffs) if movement_diffs else 0
+                features['head_movement_speed'] = head_movement
+                features['hand_movement_speed'] = hand_movement
+            else:
+                features['movement_speed_px_per_frame'] = 0
+                features['pose_change_magnitude'] = 0
+                features['head_movement_speed'] = 0
+                features['hand_movement_speed'] = 0
+
+            # 現在のキーポイントを保存
+            self.prev_keypoints[track_id] = keypoints.copy()
+
+            # 角度計算（簡単な例）
+            features['head_pose_angle'] = 0  # TODO: 実装
+            features['torso_lean_angle'] = 0  # TODO: 実装
+            features['left_arm_angle'] = 0   # TODO: 実装
+            features['right_arm_angle'] = 0  # TODO: 実装
+
+        except Exception as e:
+            logger.error(f"キーポイント特徴量計算エラー: {e}")
+            # デフォルト値で埋める
+            features = {
+                'wrist_to_face_dist_left': -1, 'wrist_to_face_dist_right': -1,
+                'min_wrist_face_dist': -1, 'shoulder_width': -1,
+                'movement_speed_px_per_frame': 0, 'pose_change_magnitude': 0,
+                'head_movement_speed': 0, 'hand_movement_speed': 0,
+                'head_pose_angle': 0, 'torso_lean_angle': 0,
+                'left_arm_angle': 0, 'right_arm_angle': 0
+            }
+
+        return features
+
+    def calculate_image_quality(self, frame, bbox):
+        """画像品質指標を計算"""
+        try:
+            x1, y1, x2, y2 = map(int, bbox)
+            roi = frame[y1:y2, x1:x2]
+
+            if roi.size == 0:
+                return {'brightness': 0, 'contrast': 0, 'blur_score': 0, 'noise_level': 0}
+
+            # グレースケール変換
+            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) > 2 else roi
+
+            # 明度
+            brightness = np.mean(gray_roi)
+
+            # コントラスト（標準偏差）
+            contrast = np.std(gray_roi)
+
+            # ブラー検出（ラプラシアン分散）
+            blur_score = cv2.Laplacian(gray_roi, cv2.CV_64F).var()
+
+            # ノイズレベル（簡易推定）
+            noise_level = np.std(cv2.GaussianBlur(gray_roi, (5,5), 0) - gray_roi)
+
+            return {
+                'brightness': brightness,
+                'contrast': contrast, 
+                'blur_score': blur_score,
+                'noise_level': noise_level
+            }
+
+        except Exception as e:
+            logger.error(f"画像品質計算エラー: {e}")
+            return {'brightness': 0, 'contrast': 0, 'blur_score': 0, 'noise_level': 0}
+
+    def log_detection(self, frame_idx, track_id, detection_data, frame, 
+                    phone_usage, phone_confidence, phone_method,
+                    grid_row, grid_col, video_source="unknown"):
+        """拡張検出ログを記録"""
+        try:
+            current_time = time.time()
+            timestamp = datetime.now().isoformat()
+            relative_time = current_time - self.start_time
+
+            # 基本データ取得
+            keypoints = detection_data['keypoints']
+            bbox = detection_data['bbox']
+            center = detection_data['center']
+            confidence = detection_data.get('confidence', 0.0)
+
+            # バウンディングボックス情報
+            x1, y1, x2, y2 = bbox
+            bbox_width = x2 - x1
+            bbox_height = y2 - y1
+            bbox_area = bbox_width * bbox_height
+
+            # キーポイント特徴量計算
+            kp_features = self.calculate_keypoint_features(keypoints, track_id)
+
+            # 画像品質計算
+            quality_metrics = self.calculate_image_quality(frame, bbox)
+
+            # キーポイント座標をフラット化
+            kp_coords = []
+            for i in range(17):
+                if i < len(keypoints):
+                    kp_coords.extend([keypoints[i][0], keypoints[i][1], keypoints[i][2]])
+                else:
+                    kp_coords.extend([0, 0, 0])  # 欠損値
+
+            # ログデータ準備
+            log_data = [
+                # 基本情報
+                timestamp, frame_idx, relative_time, 33.33,  # 30fps想定
+
+                # 人物識別情報
+                track_id, 0.9, confidence,  # track_confidenceは仮値
+
+                # 位置情報
+                x1, y1, x2, y2, bbox_width, bbox_height, bbox_area,
+                center[0], center[1], grid_row, grid_col,
+
+                # 行動判定
+                phone_usage, phone_confidence, phone_usage, phone_method,
+
+                # キーポイント座標
+                *kp_coords,
+
+                # 動作特徴量
+                kp_features['movement_speed_px_per_frame'],
+                kp_features['pose_change_magnitude'],
+                kp_features['head_movement_speed'],
+                kp_features['hand_movement_speed'],
+                kp_features['wrist_to_face_dist_left'],
+                kp_features['wrist_to_face_dist_right'],
+                kp_features['min_wrist_face_dist'],
+
+                # 姿勢分析
+                kp_features['head_pose_angle'],
+                kp_features['shoulder_width'],
+                kp_features['torso_lean_angle'],
+                kp_features['left_arm_angle'],
+                kp_features['right_arm_angle'],
+
+                # 画像品質
+                quality_metrics['brightness'],
+                quality_metrics['contrast'],
+                quality_metrics['blur_score'],
+                quality_metrics['noise_level'],
+
+                # 時系列特徴（簡易実装）
+                0, 0.0, 0.8, 0.9,  # 仮値
+
+                # アノテーション用（空欄）
+                "", "", "", 0.0, "", False,
+
+                # メタデータ
+                video_source, "v1.0", "yolov8m-pose", ""
+            ]
+
+            # CSV書き込み
+            if self.csv_writer:
+                self.csv_writer.writerow(log_data)
+
+        except Exception as e:
+            logger.error(f"ログ記録エラー: {e}")
+
+    def close(self):
+        """CSVファイルをクローズ"""
+        if self.csv_file:
+            self.csv_file.close()
+            logger.info(f"拡張CSVログを保存完了: {self.csv_path}")
 
 class VideoDistortionCorrector:
     """動画の歪み補正クラス（逆バレル補正版）"""
