@@ -82,107 +82,147 @@ class VideoDistortionCorrector:
         return cv2.remap(frame, self.map_x, self.map_y, cv2.INTER_LINEAR)
 
 
+class OrderedIDTracker:
+    """左から順にIDを割り振る追跡システム"""
+
+    def __init__(self, distance_threshold=100, max_missing_frames=30):
+        self.distance_threshold = distance_threshold
+        self.max_missing_frames = max_missing_frames
+        self.tracked_persons = {}  # {id: {'center': (x, y), 'missing_count': int, 'bbox': (x1,y1,x2,y2)}}
+        self.next_id = 1
+
+    def update_tracks(self, detections):
+        """
+        検出結果を更新し、左から順にIDを割り振る
+
+        Parameters:
+        detections: list of dict with keys: 'center', 'bbox', 'keypoints', 'confidence'
+
+        Returns:
+        list of dict with assigned IDs
+        """
+        if not detections:
+            # 検出がない場合、既存の追跡を更新
+            self._update_missing_counts()
+            return []
+
+        # 検出結果を左から右へソート（x座標順）
+        detections_sorted = sorted(detections, key=lambda d: d['center'][0])
+
+        # 既存の追跡対象も左から右へソート
+        existing_tracks = sorted(self.tracked_persons.items(), key=lambda t: t[1]['center'][0])
+
+        assigned_detections = []
+        used_track_ids = set()
+
+        # 既存の追跡対象とのマッチング
+        for detection in detections_sorted:
+            best_match_id = None
+            best_distance = float('inf')
+
+            detection_center = detection['center']
+
+            # 既存の追跡対象との距離を計算
+            for track_id, track_data in existing_tracks:
+                if track_id in used_track_ids:
+                    continue
+
+                track_center = track_data['center']
+                distance = np.linalg.norm(np.array(detection_center) - np.array(track_center))
+
+                if distance < self.distance_threshold and distance < best_distance:
+                    best_distance = distance
+                    best_match_id = track_id
+
+            # マッチした場合は既存IDを使用、そうでなければ新しいIDを割り振り
+            if best_match_id is not None:
+                assigned_id = best_match_id
+                used_track_ids.add(assigned_id)
+            else:
+                assigned_id = self._get_next_available_id()
+
+            # 追跡データを更新
+            self.tracked_persons[assigned_id] = {
+                'center': detection_center,
+                'missing_count': 0,
+                'bbox': detection['bbox']
+            }
+
+            # 結果に追加
+            detection_with_id = detection.copy()
+            detection_with_id['track_id'] = assigned_id
+            assigned_detections.append(detection_with_id)
+
+        # 使用されなかった追跡対象のmissing_countを増加
+        for track_id in list(self.tracked_persons.keys()):
+            if track_id not in used_track_ids:
+                self.tracked_persons[track_id]['missing_count'] += 1
+
+                # 長時間見つからない場合は削除
+                if self.tracked_persons[track_id]['missing_count'] > self.max_missing_frames:
+                    del self.tracked_persons[track_id]
+                    logger.debug(f"Track ID {track_id} removed due to long absence")
+
+        return assigned_detections
+
+    def _get_next_available_id(self):
+        """次に利用可能なIDを取得（左から順の順序を保つため）"""
+        # 既存のIDの中で最小の欠番を探す
+        existing_ids = set(self.tracked_persons.keys())
+
+        # 1から順番にチェック
+        for i in range(1, max(existing_ids) + 2 if existing_ids else 2):
+            if i not in existing_ids:
+                return i
+
+        # ここに到達することはないが、念のため
+        return max(existing_ids) + 1 if existing_ids else 1
+
+    def _update_missing_counts(self):
+        """全ての追跡対象のmissing_countを更新"""
+        for track_id in list(self.tracked_persons.keys()):
+            self.tracked_persons[track_id]['missing_count'] += 1
+            if self.tracked_persons[track_id]['missing_count'] > self.max_missing_frames:
+                del self.tracked_persons[track_id]
+                logger.debug(f"Track ID {track_id} removed due to long absence")
+
+    def get_active_tracks(self):
+        """アクティブな追跡対象を取得"""
+        return {tid: data for tid, data in self.tracked_persons.items()}
+
+
 class PostureDetectionSystem:
-    """居眠り検出システムクラス（修正版：人物追跡機能強化）"""
+    """居眠り検出システムクラス（順序付きID割り振り版）"""
 
     def __init__(self, model_path="models/yolov8m-pose.pt"):
         self.model = YOLO(model_path)
 
-        # 人物追跡用のデータ構造（修正）
-        self.person_states = {}  # 辞書形式に変更
-        self.next_person_id = 0  # 次に割り当てるID
-        self.existing_persons = {}  # クラス変数として保持
+        # 順序付きIDトラッカーを初期化
+        self.id_tracker = OrderedIDTracker(distance_threshold=100, max_missing_frames=30)
+
+        # 人物の状態管理（track_idベース）
+        self.person_states = {}
 
         self.config = {
             "conf_threshold": 0.4,
             "phone_distance_threshold": 100,
             "smoothing_frames": 5,
             "detection_interval": 3,
-            "max_missing_frames": 30,  # ID削除までの猶予フレーム数
-            "tracking_distance_threshold": 150,  # 人物追跡の最大距離
         }
 
         # グリッド分割設定を初期化
         self.split_ratios = [0.5, 0.5]  # 上下50%ずつ
         self.split_ratios_cols = [0.5, 0.5]  # 左右50%ずつ
 
-    def get_person_id(self, keypoints, frame_idx):
-        """
-        改善された人物ID取得
-        - フレーム間での一貫したID管理
-        - 古いIDのクリーンアップ機能
-        """
-        if keypoints.shape[0] < 17:
-            return None
-
-        # 現在の人物の中心座標を計算
-        valid_points = keypoints[keypoints[:, 0] > 0]  # 有効なキーポイントのみ
-        if len(valid_points) == 0:
-            return None
-
-        current_center = np.mean(valid_points[:, :2], axis=0)
-
-        # 既存の人物との距離を計算
-        min_distance = float("inf")
-        best_id = None
-
-        for person_id, person_data in self.existing_persons.items():
-            last_center = person_data["center"]
-            distance = np.linalg.norm(current_center - last_center)
-
-            if distance < min_distance and distance < self.config["tracking_distance_threshold"]:
-                min_distance = distance
-                best_id = person_id
-
-        # 新しい人物の場合
-        if best_id is None:
-            best_id = self.next_person_id
-            self.next_person_id += 1
-            # 新しい人物の状態を初期化
-            self.person_states[best_id] = {
-                "phone_history": deque(maxlen=self.config["smoothing_frames"]),
-                "last_seen": frame_idx,
-            }
-
-        # 人物情報を更新
-        self.existing_persons[best_id] = {
-            "center": current_center,
-            "last_seen": frame_idx
-        }
-
-        # 人物状態の最終確認時刻を更新
-        if best_id in self.person_states:
-            self.person_states[best_id]["last_seen"] = frame_idx
-
-        return best_id
-
-    def cleanup_old_persons(self, current_frame):
-        """
-        古い人物IDをクリーンアップ（メモリリーク対策）
-        """
-        to_remove = []
-
-        # existing_personsのクリーンアップ
-        for person_id, person_data in self.existing_persons.items():
-            if current_frame - person_data["last_seen"] > self.config["max_missing_frames"]:
-                to_remove.append(person_id)
-
-        for person_id in to_remove:
-            del self.existing_persons[person_id]
-            if person_id in self.person_states:
-                del self.person_states[person_id]
-            logger.debug(f"Person ID {person_id} removed due to long absence")
-
-    def smooth_detection(self, person_id, using_phone):
-        """検出結果を平滑化（エラーハンドリング追加）"""
-        if person_id not in self.person_states:
-            # 念のため、状態が存在しない場合の処理
-            self.person_states[person_id] = {
+    def smooth_detection(self, track_id, using_phone):
+        """検出結果を平滑化（track_idベース）"""
+        if track_id not in self.person_states:
+            self.person_states[track_id] = {
                 "phone_history": deque(maxlen=self.config["smoothing_frames"]),
                 "last_seen": 0,
             }
 
-        state = self.person_states[person_id]
+        state = self.person_states[track_id]
         state["phone_history"].append(using_phone)
 
         # 平滑化：過半数の判定で決定
@@ -310,26 +350,24 @@ class PostureDetectionSystem:
 
     def process_frame(self, frame, frame_idx, csv_writer):
         """
-        フレームを処理して検出結果を返す（修正版）
-        - 継続的な人物追跡
-        - メモリリーク対策
+        フレームを処理して検出結果を返す（順序付きID割り振り版）
         """
         height, width = frame.shape[:2]
-        keypoints_all = []
-        bboxes = []
 
-        # 古い人物IDのクリーンアップ（メモリリーク対策）
-        if frame_idx % 30 == 0:  # 30フレームごとにクリーンアップ
-            self.cleanup_old_persons(frame_idx)
-
-        # YOLOで全体フレームを処理
+        # YOLO検出実行（追跡なし）
         try:
             results = self.model(frame, conf=self.config["conf_threshold"], verbose=False)
         except Exception as e:
-            logger.error(f"YOLO推論エラー: {e}")
+            logger.error(f"YOLO検出エラー: {e}")
             return frame
 
-        # 検出結果の処理
+        # グリッド境界計算
+        x_grid, y_grid = self.calculate_grid_boundaries(
+            width, height, self.split_ratios_cols, self.split_ratios
+        )
+
+        # 検出結果を整理
+        detections = []
         for result in results:
             if result.keypoints is None or result.boxes is None:
                 continue
@@ -342,81 +380,98 @@ class PostureDetectionSystem:
                 for kps, box, conf in zip(kps_list, boxes, confs):
                     if conf < self.config["conf_threshold"]:
                         continue
-                    keypoints_all.append(kps)
-                    bboxes.append(box)
-            except Exception as e:
-                logger.error(f"検出結果処理エラー: {e}")
-                continue
-
-        # グリッド境界計算
-        x_grid, y_grid = self.calculate_grid_boundaries(
-            width, height, self.split_ratios_cols, self.split_ratios
-        )
-
-        # 検出結果の処理と描画（修正版）
-        if keypoints_all:
-            for kps, box in zip(keypoints_all, bboxes):
-                try:
+                    
                     if kps.shape[0] < 17:
                         continue
 
-                    # 修正：継続的なID管理
-                    person_id = self.get_person_id(kps, frame_idx)
-                    if person_id is None:
-                        continue
-
-                    # 中心座標計算（エラーハンドリング追加）
+                    # 中心座標計算
                     valid_points = kps[kps[:, 0] > 0]
                     if len(valid_points) == 0:
                         continue
                     center = np.mean(valid_points[:, :2], axis=0)
-
-                    # 携帯使用検出
-                    using_phone = self.detect_phone_usage(kps)
-                    using_phone = self.smooth_detection(person_id, using_phone)
-
-                    # 領域の取得
                     cx, cy = int(center[0]), int(center[1])
-                    region = self.get_person_region(cx, cy, x_grid, y_grid)
-                    row, col = region if region else (-1, -1)
 
-                    # CSVに結果を記録
-                    if csv_writer:
-                        csv_writer.writerow([frame_idx, person_id, using_phone, row, col])
+                    detections.append({
+                        'center': (cx, cy),
+                        'bbox': box,
+                        'keypoints': kps,
+                        'confidence': conf
+                    })
 
-                    # 状態表示
-                    if using_phone:
-                        color = (0, 0, 255)  # 赤色
-                        label = f"ID: {person_id}: Phone"
-                    else:
-                        color = (255, 255, 0)  # 黄色
-                        label = f"ID: {person_id}: Awake"
+            except Exception as e:
+                logger.error(f"検出結果処理エラー: {e}")
+                continue
 
-                    if region:
-                        row, col = region
-                        label += f" [R{row},C{col}]"
+        # 順序付きIDトラッカーで追跡更新
+        tracked_detections = self.id_tracker.update_tracks(detections)
 
-                    # バウンディングボックス描画
-                    x1, y1, x2, y2 = map(int, box)
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
-                    cv2.putText(
-                        frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2
-                    )
+        # グリッド描画
+        self.draw_monitor_grid(frame, self.split_ratios_cols, self.split_ratios)
 
-                    # キーポイント描画
-                    for pt in kps.astype(int):
-                        if len(pt) >= 2 and pt[0] > 0 and pt[1] > 0:
-                            cv2.circle(frame, tuple(pt[:2]), 3, (255, 255, 0), -1)
+        # 検出結果の描画
+        for detection in tracked_detections:
+            track_id = detection['track_id']
+            kps = detection['keypoints']
+            box = detection['bbox']
+            cx, cy = detection['center']
 
-                except Exception as e:
-                    logger.error(f"個別検出処理エラー: {e}")
-                    continue
+            # 携帯使用検出
+            using_phone = self.detect_phone_usage(kps)
+            using_phone = self.smooth_detection(track_id, using_phone)
+
+            # 領域の取得
+            region = self.get_person_region(cx, cy, x_grid, y_grid)
+            row, col = region if region else (-1, -1)
+
+            # CSVに結果を記録
+            if csv_writer:
+                csv_writer.writerow([frame_idx, track_id, using_phone, row, col])
+
+            # 状態表示
+            if using_phone:
+                color = (0, 0, 255)  # 赤色
+                label = f"ID: {track_id}: Phone"
+            else:
+                color = (255, 255, 0)  # 黄色
+                label = f"ID: {track_id}: Awake"
+
+            if region:
+                row, col = region
+                label += f" [R{row},C{col}]"
+
+            # バウンディングボックス描画
+            x1, y1, x2, y2 = map(int, box)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+            cv2.putText(
+                frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2
+            )
+
+            # キーポイント描画
+            for pt in kps.astype(int):
+                if len(pt) >= 2 and pt[0] > 0 and pt[1] > 0:
+                    cv2.circle(frame, tuple(pt[:2]), 3, (255, 255, 0), -1)
 
         # デバッグ情報の表示
-        active_persons = len(self.existing_persons)
+        active_tracks = self.id_tracker.get_active_tracks()
+        active_persons = len(active_tracks)
+        
+        # アクティブなIDを左から順にソートして表示
+        active_ids = sorted(active_tracks.keys())
+        id_info = f"Active IDs (L→R): {active_ids}" if active_ids else "Active IDs: None"
+        
         cv2.putText(
             frame,
-            f"Active IDs: {active_persons}",
+            id_info,
+            (20, height - 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),
+            2,
+        )
+        
+        cv2.putText(
+            frame,
+            f"Total Persons: {active_persons}",
             (20, height - 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
@@ -428,7 +483,7 @@ class PostureDetectionSystem:
 
 
 class IntegratedVideoProcessor:
-    """統合動画処理システム（逆バレル補正版）"""
+    """統合動画処理システム（逆バレル補正版 + 順序付きID割り振り）"""
 
     def __init__(self, k1=-0.1, strength=1.0, zoom_factor=0.8, model_path="yolov8m-pose.pt"):
         self.corrector = VideoDistortionCorrector(k1, strength, zoom_factor)
@@ -437,7 +492,7 @@ class IntegratedVideoProcessor:
     def process_video(self, input_path, output_path, result_log="frame_results.csv", 
                     show_preview=True, apply_correction=True):
         """
-        動画を処理（逆バレル歪み補正 + 居眠り検出）
+        動画を処理（逆バレル歪み補正 + 居眠り検出 + 順序付きID割り振り）
 
         Parameters:
         input_path: 入力動画パス
@@ -478,7 +533,7 @@ class IntegratedVideoProcessor:
             frame_idx = 0
             start_time = time.time()
 
-            logger.info("動画処理を開始...")
+            logger.info("動画処理を開始... (左から順ID割り振りシステム使用)")
 
             while True:
                 ret, frame = cap.read()
@@ -491,7 +546,7 @@ class IntegratedVideoProcessor:
                 if apply_correction:
                     frame = self.corrector.apply_correction(frame)
 
-                # 居眠り検出処理
+                # 居眠り検出処理（順序付きID割り振り使用）
                 frame = self.detector.process_frame(frame, frame_idx, writer)
 
                 # フレーム番号表示
@@ -507,7 +562,7 @@ class IntegratedVideoProcessor:
 
                 # プレビュー表示
                 if show_preview:
-                    display_title = "Integrated Video Processing (Fixed Tracking)"
+                    display_title = "Integrated Video Processing (Ordered ID Assignment L→R)"
                     if apply_correction:
                         display_title += f" - Zoom: {self.corrector.zoom_factor:.2f}x"
                     display_title += " - Press 'q' to quit"
@@ -527,10 +582,11 @@ class IntegratedVideoProcessor:
                     progress = (frame_idx / total_frames) * 100
                     eta = (total_frames - frame_idx) / fps_current if fps_current > 0 else 0
 
+                    active_tracks = self.detector.id_tracker.get_active_tracks()
                     logger.info(
                         f"進行状況: {progress:.1f}% ({frame_idx}/{total_frames}) "
                         f"処理速度: {fps_current:.1f}fps 残り時間: {eta:.1f}秒 "
-                        f"アクティブID数: {len(self.detector.existing_persons)}"
+                        f"アクティブID: {sorted(active_tracks.keys())}"
                     )
 
         # リソース解放
@@ -545,7 +601,9 @@ class IntegratedVideoProcessor:
         logger.info(f"結果ログ: {result_log}")
         logger.info(f"処理時間: {total_time:.1f}秒")
         logger.info(f"平均処理速度: {frame_idx/total_time:.1f}fps")
-        logger.info(f"最終ID数: {len(self.detector.existing_persons)}")
+
+        active_tracks = self.detector.id_tracker.get_active_tracks()
+        logger.info(f"最終アクティブID: {sorted(active_tracks.keys())}")
 
     def process_image(self, image_path, output_dir="output", show_comparison=True):
         """
