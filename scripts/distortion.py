@@ -7,6 +7,7 @@ from ultralytics import YOLO
 from collections import defaultdict, deque
 import logging
 import csv
+from datetime import datetime
 
 # ログ設定
 logging.basicConfig(
@@ -209,7 +210,7 @@ class EnhancedCSVLogger:
 
             return {
                 'brightness': brightness,
-                'contrast': contrast, 
+                'contrast': contrast,
                 'blur_score': blur_score,
                 'noise_level': noise_level
             }
@@ -315,6 +316,7 @@ class EnhancedCSVLogger:
         if self.csv_file:
             self.csv_file.close()
             logger.info(f"拡張CSVログを保存完了: {self.csv_path}")
+
 
 class VideoDistortionCorrector:
     """動画の歪み補正クラス（逆バレル補正版）"""
@@ -649,9 +651,9 @@ class PostureDetectionSystem:
             return None
         return row_idx, col_idx
 
-    def process_frame(self, frame, frame_idx, csv_writer):
+    def process_frame(self, frame, frame_idx, csv_writer, enhanced_csv_logger=None):
         """
-        フレームを処理して検出結果を返す（順序付きID割り振り版）
+        フレームを処理して検出結果を返す（順序付きID割り振り版 + 拡張CSV対応）
         """
         height, width = frame.shape[:2]
 
@@ -681,7 +683,7 @@ class PostureDetectionSystem:
                 for kps, box, conf in zip(kps_list, boxes, confs):
                     if conf < self.config["conf_threshold"]:
                         continue
-                    
+
                     if kps.shape[0] < 17:
                         continue
 
@@ -718,15 +720,41 @@ class PostureDetectionSystem:
 
             # 携帯使用検出
             using_phone = self.detect_phone_usage(kps)
+            using_phone_raw = using_phone  # 生の判定結果を保存
             using_phone = self.smooth_detection(track_id, using_phone)
+
+            # 検出方法の判定
+            phone_method = "front_view" if using_phone_raw else "back_view" if self.detect_phone_usage_back_view(kps) else "failed"
+            phone_confidence = 0.8 if using_phone else 0.2  # 簡易的な信頼度
 
             # 領域の取得
             region = self.get_person_region(cx, cy, x_grid, y_grid)
             row, col = region if region else (-1, -1)
 
-            # CSVに結果を記録
+            # 基本CSVに結果を記録
             if csv_writer:
                 csv_writer.writerow([frame_idx, track_id, using_phone, row, col])
+
+            # 拡張CSVに結果を記録
+            if enhanced_csv_logger:
+                detection_data = {
+                    'keypoints': kps,
+                    'bbox': box,
+                    'center': (cx, cy),
+                    'confidence': detection['confidence']
+                }
+                enhanced_csv_logger.log_detection(
+                    frame_idx=frame_idx,
+                    track_id=track_id,
+                    detection_data=detection_data,
+                    frame=frame,
+                    phone_usage=using_phone,
+                    phone_confidence=phone_confidence,
+                    phone_method=phone_method,
+                    grid_row=row,
+                    grid_col=col,
+                    video_source="google_drive"
+                )
 
             # 状態表示
             if using_phone:
@@ -755,11 +783,11 @@ class PostureDetectionSystem:
         # デバッグ情報の表示
         active_tracks = self.id_tracker.get_active_tracks()
         active_persons = len(active_tracks)
-        
+
         # アクティブなIDを左から順にソートして表示
         active_ids = sorted(active_tracks.keys())
         id_info = f"Active IDs (L→R): {active_ids}" if active_ids else "Active IDs: None"
-        
+
         cv2.putText(
             frame,
             id_info,
@@ -769,7 +797,7 @@ class PostureDetectionSystem:
             (0, 255, 0),
             2,
         )
-        
+
         cv2.putText(
             frame,
             f"Total Persons: {active_persons}",
@@ -789,6 +817,13 @@ class IntegratedVideoProcessor:
     def __init__(self, k1=-0.1, strength=1.0, zoom_factor=0.8, model_path="yolov8m-pose.pt"):
         self.corrector = VideoDistortionCorrector(k1, strength, zoom_factor)
         self.detector = PostureDetectionSystem(model_path)
+
+        # 拡張CSVロガーを初期化（オプション）
+        self.csv_logger = None
+
+    def set_csv_logger(self, csv_path="enhanced_detection_log.csv"):
+        """CSVロガーを設定"""
+        self.csv_logger = EnhancedCSVLogger(csv_path)
 
     def process_video(self, input_path, output_path, result_log="frame_results.csv", 
                     show_preview=True, apply_correction=True):
@@ -827,6 +862,8 @@ class IntegratedVideoProcessor:
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
         # 結果ログ準備
+        os.makedirs(os.path.dirname(result_log), exist_ok=True)
+        
         with open(result_log, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(["frame", "person_id", "using_phone", "grid_row", "grid_col"])
@@ -894,6 +931,10 @@ class IntegratedVideoProcessor:
         cap.release()
         out.release()
         cv2.destroyAllWindows()
+
+        # CSVロガーをクローズ
+        if self.csv_logger:
+            self.csv_logger.close()
 
         # 処理完了時間
         total_time = time.time() - start_time
