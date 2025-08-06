@@ -24,6 +24,7 @@ class EnhancedCSVLogger:
         self.csv_writer = None
         self.start_time = time.time()
         self.prev_keypoints = {}  # track_id -> previous keypoints for motion calculation
+        self.log_count = 0
 
         # CSV ヘッダー定義
         self.headers = [
@@ -34,7 +35,7 @@ class EnhancedCSVLogger:
             "person_id", "track_confidence", "detection_confidence",
 
             # 位置情報
-            "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2", 
+            "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2",
             "bbox_width", "bbox_height", "bbox_area",
             "center_x", "center_y", "grid_row", "grid_col",
 
@@ -46,7 +47,7 @@ class EnhancedCSVLogger:
             *[f"kp_{i}_{coord}" for i in range(17) for coord in ["x", "y", "conf"]],
 
             # 動作特徴量
-            "movement_speed_px_per_frame", "pose_change_magnitude", 
+            "movement_speed_px_per_frame", "pose_change_magnitude",
             "head_movement_speed", "hand_movement_speed",
             "wrist_to_face_dist_left", "wrist_to_face_dist_right", "min_wrist_face_dist",
 
@@ -74,120 +75,83 @@ class EnhancedCSVLogger:
     def init_csv(self):
         """CSV ファイルを初期化"""
         try:
+            # ディレクトリ作成
+            os.makedirs(os.path.dirname(self.csv_path), exist_ok=True)
+
             self.csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
             self.csv_writer = csv.writer(self.csv_file)
             self.csv_writer.writerow(self.headers)
+
+            # 即座にフラッシュしてヘッダーを書き込み
+            self.csv_file.flush()
+
             logger.info(f"拡張CSVログを初期化: {self.csv_path}")
+            logger.info(f"CSVヘッダー: {self.headers}")
+
         except Exception as e:
             logger.error(f"CSV初期化エラー: {e}")
+            raise
 
     def calculate_keypoint_features(self, keypoints, track_id):
-        """キーポイントから特徴量を計算"""
-        features = {}
+        """キーポイントから特徴量を計算（簡素化版）"""
+        features = {
+            'wrist_to_face_dist_left': -1,
+            'wrist_to_face_dist_right': -1,
+            'min_wrist_face_dist': -1,
+            'shoulder_width': -1,
+            'movement_speed_px_per_frame': 0,
+            'pose_change_magnitude': 0,
+            'head_movement_speed': 0,
+            'hand_movement_speed': 0,
+            'head_pose_angle': 0,
+            'torso_lean_angle': 0,
+            'left_arm_angle': 0,
+            'right_arm_angle': 0
+        }
 
         try:
-            # キーポイントのインデックス定義
-            kp_idx = {
-                'nose': 0, 'left_eye': 1, 'right_eye': 2, 'left_ear': 3, 'right_ear': 4,
-                'left_shoulder': 5, 'right_shoulder': 6, 'left_elbow': 7, 'right_elbow': 8,
-                'left_wrist': 9, 'right_wrist': 10, 'left_hip': 11, 'right_hip': 12,
-                'left_knee': 13, 'right_knee': 14, 'left_ankle': 15, 'right_ankle': 16
-            }
+            # 基本的な距離計算のみ実装
+            if len(keypoints) >= 17:
+                # 鼻（index 0）、手首（index 9, 10）
+                nose = keypoints[0][:2] if keypoints[0][2] > 0.3 else None
+                left_wrist = keypoints[9][:2] if keypoints[9][2] > 0.3 else None
+                right_wrist = keypoints[10][:2] if keypoints[10][2] > 0.3 else None
 
-            # 有効なキーポイントのみ取得
-            def get_valid_point(idx):
-                if idx >= len(keypoints) or keypoints[idx][2] < 0.3:  # 信頼度チェック
-                    return None
-                return keypoints[idx][:2]
+                # 手首-顔の距離
+                if nose is not None and left_wrist is not None:
+                    features['wrist_to_face_dist_left'] = float(np.linalg.norm(nose - left_wrist))
 
-            # 基本的な距離計算
-            nose = get_valid_point(kp_idx['nose'])
-            left_wrist = get_valid_point(kp_idx['left_wrist'])
-            right_wrist = get_valid_point(kp_idx['right_wrist'])
-            left_shoulder = get_valid_point(kp_idx['left_shoulder'])
-            right_shoulder = get_valid_point(kp_idx['right_shoulder'])
+                if nose is not None and right_wrist is not None:
+                    features['wrist_to_face_dist_right'] = float(np.linalg.norm(nose - right_wrist))
 
-            # 手首-顔の距離
-            if nose is not None and left_wrist is not None:
-                features['wrist_to_face_dist_left'] = np.linalg.norm(nose - left_wrist)
-            else:
-                features['wrist_to_face_dist_left'] = -1
+                # 最小距離
+                valid_dists = [d for d in [features['wrist_to_face_dist_left'], 
+                                        features['wrist_to_face_dist_right']] if d > 0]
+                if valid_dists:
+                    features['min_wrist_face_dist'] = min(valid_dists)
 
-            if nose is not None and right_wrist is not None:
-                features['wrist_to_face_dist_right'] = np.linalg.norm(nose - right_wrist)
-            else:
-                features['wrist_to_face_dist_right'] = -1
+                # 肩幅
+                left_shoulder = keypoints[5][:2] if keypoints[5][2] > 0.3 else None
+                right_shoulder = keypoints[6][:2] if keypoints[6][2] > 0.3 else None
 
-            features['min_wrist_face_dist'] = min(
-                features['wrist_to_face_dist_left'] if features['wrist_to_face_dist_left'] > 0 else float('inf'),
-                features['wrist_to_face_dist_right'] if features['wrist_to_face_dist_right'] > 0 else float('inf')
-            )
-            if features['min_wrist_face_dist'] == float('inf'):
-                features['min_wrist_face_dist'] = -1
-
-            # 肩幅
-            if left_shoulder is not None and right_shoulder is not None:
-                features['shoulder_width'] = np.linalg.norm(left_shoulder - right_shoulder)
-            else:
-                features['shoulder_width'] = -1
-
-            # 動作速度計算（前フレームとの比較）
-            if track_id in self.prev_keypoints:
-                prev_kp = self.prev_keypoints[track_id]
-                movement_diffs = []
-                head_movement = 0
-                hand_movement = 0
-
-                # 全体的な動き
-                for i, (curr, prev) in enumerate(zip(keypoints, prev_kp)):
-                    if curr[2] > 0.3 and prev[2] > 0.3:  # 両方とも有効
-                        diff = np.linalg.norm(curr[:2] - prev[:2])
-                        movement_diffs.append(diff)
-
-                        # 頭部の動き（鼻）
-                        if i == kp_idx['nose']:
-                            head_movement = diff
-                        # 手の動き（手首）
-                        elif i in [kp_idx['left_wrist'], kp_idx['right_wrist']]:
-                            hand_movement = max(hand_movement, diff)
-
-                features['movement_speed_px_per_frame'] = np.mean(movement_diffs) if movement_diffs else 0
-                features['pose_change_magnitude'] = np.sum(movement_diffs) if movement_diffs else 0
-                features['head_movement_speed'] = head_movement
-                features['hand_movement_speed'] = hand_movement
-            else:
-                features['movement_speed_px_per_frame'] = 0
-                features['pose_change_magnitude'] = 0
-                features['head_movement_speed'] = 0
-                features['hand_movement_speed'] = 0
-
-            # 現在のキーポイントを保存
-            self.prev_keypoints[track_id] = keypoints.copy()
-
-            # 角度計算（簡単な例）
-            features['head_pose_angle'] = 0  # TODO: 実装
-            features['torso_lean_angle'] = 0  # TODO: 実装
-            features['left_arm_angle'] = 0   # TODO: 実装
-            features['right_arm_angle'] = 0  # TODO: 実装
+                if left_shoulder is not None and right_shoulder is not None:
+                    features['shoulder_width'] = float(np.linalg.norm(left_shoulder - right_shoulder))
 
         except Exception as e:
-            logger.error(f"キーポイント特徴量計算エラー: {e}")
-            # デフォルト値で埋める
-            features = {
-                'wrist_to_face_dist_left': -1, 'wrist_to_face_dist_right': -1,
-                'min_wrist_face_dist': -1, 'shoulder_width': -1,
-                'movement_speed_px_per_frame': 0, 'pose_change_magnitude': 0,
-                'head_movement_speed': 0, 'hand_movement_speed': 0,
-                'head_pose_angle': 0, 'torso_lean_angle': 0,
-                'left_arm_angle': 0, 'right_arm_angle': 0
-            }
+            logger.warning(f"キーポイント特徴量計算エラー: {e}")
 
         return features
 
     def calculate_image_quality(self, frame, bbox):
-        """画像品質指標を計算"""
+        """画像品質指標を計算（簡素化版）"""
         try:
             x1, y1, x2, y2 = map(int, bbox)
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
+
+            if x2 <= x1 or y2 <= y1:
+                return {'brightness': 0, 'contrast': 0, 'blur_score': 0, 'noise_level': 0}
+
             roi = frame[y1:y2, x1:x2]
 
             if roi.size == 0:
@@ -196,17 +160,11 @@ class EnhancedCSVLogger:
             # グレースケール変換
             gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) > 2 else roi
 
-            # 明度
-            brightness = np.mean(gray_roi)
-
-            # コントラスト（標準偏差）
-            contrast = np.std(gray_roi)
-
-            # ブラー検出（ラプラシアン分散）
-            blur_score = cv2.Laplacian(gray_roi, cv2.CV_64F).var()
-
-            # ノイズレベル（簡易推定）
-            noise_level = np.std(cv2.GaussianBlur(gray_roi, (5,5), 0) - gray_roi)
+            # 基本的な品質指標
+            brightness = float(np.mean(gray_roi))
+            contrast = float(np.std(gray_roi))
+            blur_score = float(cv2.Laplacian(gray_roi, cv2.CV_64F).var())
+            noise_level = 0.0  # 簡素化
 
             return {
                 'brightness': brightness,
@@ -216,14 +174,16 @@ class EnhancedCSVLogger:
             }
 
         except Exception as e:
-            logger.error(f"画像品質計算エラー: {e}")
+            logger.warning(f"画像品質計算エラー: {e}")
             return {'brightness': 0, 'contrast': 0, 'blur_score': 0, 'noise_level': 0}
 
     def log_detection(self, frame_idx, track_id, detection_data, frame, 
                     phone_usage, phone_confidence, phone_method,
                     grid_row, grid_col, video_source="unknown"):
-        """拡張検出ログを記録"""
+        """拡張検出ログを記録（修正版）"""
         try:
+            self.log_count += 1
+
             current_time = time.time()
             timestamp = datetime.now().isoformat()
             relative_time = current_time - self.start_time
@@ -246,30 +206,35 @@ class EnhancedCSVLogger:
             # 画像品質計算
             quality_metrics = self.calculate_image_quality(frame, bbox)
 
-            # キーポイント座標をフラット化
+            # キーポイント座標をフラット化（17点×3座標=51列）
             kp_coords = []
             for i in range(17):
                 if i < len(keypoints):
-                    kp_coords.extend([keypoints[i][0], keypoints[i][1], keypoints[i][2]])
+                    kp_coords.extend([
+                        float(keypoints[i][0]),
+                        float(keypoints[i][1]),
+                        float(keypoints[i][2])
+                    ])
                 else:
-                    kp_coords.extend([0, 0, 0])  # 欠損値
+                    kp_coords.extend([0.0, 0.0, 0.0])
 
             # ログデータ準備
             log_data = [
                 # 基本情報
-                timestamp, frame_idx, relative_time, 33.33,  # 30fps想定
+                timestamp, frame_idx, relative_time, 33.33,
 
                 # 人物識別情報
-                track_id, 0.9, confidence,  # track_confidenceは仮値
+                track_id, 0.9, float(confidence),
 
                 # 位置情報
-                x1, y1, x2, y2, bbox_width, bbox_height, bbox_area,
-                center[0], center[1], grid_row, grid_col,
+                float(x1), float(y1), float(x2), float(y2),
+                float(bbox_width), float(bbox_height), float(bbox_area),
+                float(center[0]), float(center[1]), grid_row, grid_col,
 
                 # 行動判定
                 phone_usage, phone_confidence, phone_usage, phone_method,
 
-                # キーポイント座標
+                # キーポイント座標（51列）
                 *kp_coords,
 
                 # 動作特徴量
@@ -294,8 +259,8 @@ class EnhancedCSVLogger:
                 quality_metrics['blur_score'],
                 quality_metrics['noise_level'],
 
-                # 時系列特徴（簡易実装）
-                0, 0.0, 0.8, 0.9,  # 仮値
+                # 時系列特徴（仮値）
+                0, 0.0, 0.8, 0.9,
 
                 # アノテーション用（空欄）
                 "", "", "", 0.0, "", False,
@@ -304,18 +269,46 @@ class EnhancedCSVLogger:
                 video_source, "v1.0", "yolov8m-pose", ""
             ]
 
+            # データ長チェック
+            expected_length = len(self.headers)
+            actual_length = len(log_data)
+
+            if actual_length != expected_length:
+                logger.error(f"データ長不一致: 期待{expected_length}, 実際{actual_length}")
+                logger.error(f"不足分: {expected_length - actual_length}")
+
+                # 不足分を埋める
+                while len(log_data) < expected_length:
+                    log_data.append("")
+                # 余分を削る
+                log_data = log_data[:expected_length]
+
             # CSV書き込み
             if self.csv_writer:
                 self.csv_writer.writerow(log_data)
+                self.csv_file.flush()  # 即座にディスクに書き込み
+
+                # デバッグログ（最初の数回のみ）
+                if self.log_count <= 3:
+                    logger.info(f"拡張CSV記録 #{self.log_count}: frame={frame_idx}, person={track_id}")
+                elif self.log_count % 30 == 0:  # 30回ごと
+                    logger.info(f"拡張CSV記録継続: {self.log_count}行目")
 
         except Exception as e:
-            logger.error(f"ログ記録エラー: {e}")
+            logger.error(f"ログ記録エラー (frame={frame_idx}, person={track_id}): {e}")
+            import traceback
+            traceback.print_exc()
 
     def close(self):
         """CSVファイルをクローズ"""
-        if self.csv_file:
-            self.csv_file.close()
-            logger.info(f"拡張CSVログを保存完了: {self.csv_path}")
+        try:
+            if self.csv_file:
+                self.csv_file.flush()
+                self.csv_file.close()
+                logger.info(f"拡張CSVログ保存完了: {self.csv_path}")
+                logger.info(f"総記録数: {self.log_count}行")
+        except Exception as e:
+            logger.error(f"CSVクローズエラー: {e}")
 
 
 class VideoDistortionCorrector:
@@ -495,7 +488,7 @@ class OrderedIDTracker:
 
 
 class PostureDetectionSystem:
-    """居眠り検出システムクラス（順序付きID割り振り版）"""
+    """姿勢推定システムクラス（順序付きID割り振り版）"""
 
     def __init__(self, model_path="models/yolov8m-pose.pt"):
         self.model = YOLO(model_path)
@@ -583,7 +576,7 @@ class PostureDetectionSystem:
             threshold = 60
 
             # 必要なキーポイントのインデックス
-            indices = {'neck': 1, 'left_wrist': 9, 'right_wrist': 10, 
+            indices = {'neck': 1, 'left_wrist': 9, 'right_wrist': 10,
                     'left_shoulder': 5, 'right_shoulder': 6}
 
             # キーポイントの取得
@@ -736,25 +729,29 @@ class PostureDetectionSystem:
                 csv_writer.writerow([frame_idx, track_id, using_phone, row, col])
 
             # 拡張CSVに結果を記録
-            if enhanced_csv_logger:
-                detection_data = {
-                    'keypoints': kps,
-                    'bbox': box,
-                    'center': (cx, cy),
-                    'confidence': detection['confidence']
-                }
-                enhanced_csv_logger.log_detection(
-                    frame_idx=frame_idx,
-                    track_id=track_id,
-                    detection_data=detection_data,
-                    frame=frame,
-                    phone_usage=using_phone,
-                    phone_confidence=phone_confidence,
-                    phone_method=phone_method,
-                    grid_row=row,
-                    grid_col=col,
-                    video_source="google_drive"
-                )
+            if enhanced_csv_logger is not None:
+                try:
+                    detection_data = {
+                        'keypoints': kps,
+                        'bbox': box,
+                        'center': (cx, cy),
+                        'confidence': detection['confidence']
+                    }
+                    enhanced_csv_logger.log_detection(
+                        frame_idx=frame_idx,
+                        track_id=track_id,
+                        detection_data=detection_data,
+                        frame=frame,
+                        phone_usage=using_phone,
+                        phone_confidence=phone_confidence,
+                        phone_method=phone_method,
+                        grid_row=row,
+                        grid_col=col,
+                        video_source="google_drive"
+                    )
+                except Exception as csv_error:
+                    logger.error(f"拡張CSV記録エラー (frame={frame_idx}, person={track_id}): {csv_error}")
+
 
             # 状態表示
             if using_phone:
@@ -822,10 +819,15 @@ class IntegratedVideoProcessor:
         self.csv_logger = None
 
     def set_csv_logger(self, csv_path="enhanced_detection_log.csv"):
-        """CSVロガーを設定"""
-        self.csv_logger = EnhancedCSVLogger(csv_path)
+        """CSVロガーを設定（修正版）"""
+        try:
+            self.csv_logger = EnhancedCSVLogger(csv_path)
+            logger.info(f"拡張CSVロガー初期化成功: {csv_path}")
+        except Exception as e:
+            logger.error(f"拡張CSVロガー初期化失敗: {e}")
+            self.csv_logger = None
 
-    def process_video(self, input_path, output_path, result_log="frame_results.csv", 
+    def process_video(self, input_path, output_path, result_log="frame_results.csv",
                     show_preview=True, apply_correction=True):
         """
         動画を処理（逆バレル歪み補正 + 居眠り検出 + 順序付きID割り振り）
@@ -850,6 +852,12 @@ class IntegratedVideoProcessor:
 
         logger.info(f"動画情報: {width}x{height}, {fps:.1f}fps, {total_frames}フレーム")
 
+        # 拡張CSVロガーの状態確認
+        if self.csv_logger is not None:
+            logger.info("拡張CSVロガーが有効です")
+        else:
+            logger.warning("拡張CSVロガーが無効です")
+
         # 歪み補正マップ作成
         if apply_correction:
             logger.info("逆バレル歪み補正＋ズーム調整マップを作成中...")
@@ -863,7 +871,9 @@ class IntegratedVideoProcessor:
 
         # 結果ログ準備
         os.makedirs(os.path.dirname(result_log), exist_ok=True)
-        
+
+        detection_count = 0  # 検出カウンター
+
         with open(result_log, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(["frame", "person_id", "using_phone", "grid_row", "grid_col"])
@@ -884,8 +894,22 @@ class IntegratedVideoProcessor:
                 if apply_correction:
                     frame = self.corrector.apply_correction(frame)
 
-                # 居眠り検出処理（順序付きID割り振り使用）
-                frame = self.detector.process_frame(frame, frame_idx, writer)
+                # 居眠り検出処理（拡張CSVロガーを渡す）
+                try:
+                    frame_before_detection = len(self.csv_logger.headers) if self.csv_logger else 0
+
+                    frame = self.detector.process_frame(
+                        frame, frame_idx, writer, self.csv_logger
+                    )
+
+                    # 検出結果をカウント（デバッグ用）
+                    if self.csv_logger and hasattr(self.csv_logger, 'log_count'):
+                        current_count = self.csv_logger.log_count
+                        if current_count > detection_count:
+                            detection_count = current_count
+
+                except Exception as detection_error:
+                    logger.error(f"フレーム{frame_idx}処理エラー: {detection_error}")
 
                 # フレーム番号表示
                 cv2.putText(
@@ -898,13 +922,21 @@ class IntegratedVideoProcessor:
                     2,
                 )
 
+                # 拡張CSV記録状況表示
+                if self.csv_logger and hasattr(self.csv_logger, 'log_count'):
+                    cv2.putText(
+                        frame,
+                        f"Enhanced CSV: {self.csv_logger.log_count} records",
+                        (20, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 255),
+                        2,
+                    )
+
                 # プレビュー表示
                 if show_preview:
-                    display_title = "Integrated Video Processing (Ordered ID Assignment L→R)"
-                    if apply_correction:
-                        display_title += f" - Zoom: {self.corrector.zoom_factor:.2f}x"
-                    display_title += " - Press 'q' to quit"
-
+                    display_title = "Integrated Video Processing (Fixed Enhanced CSV)"
                     cv2.imshow(display_title, frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         logger.info("ユーザーによって処理が中断されました")
@@ -921,10 +953,13 @@ class IntegratedVideoProcessor:
                     eta = (total_frames - frame_idx) / fps_current if fps_current > 0 else 0
 
                     active_tracks = self.detector.id_tracker.get_active_tracks()
+                    csv_records = self.csv_logger.log_count if self.csv_logger else 0
+
                     logger.info(
                         f"進行状況: {progress:.1f}% ({frame_idx}/{total_frames}) "
                         f"処理速度: {fps_current:.1f}fps 残り時間: {eta:.1f}秒 "
-                        f"アクティブID: {sorted(active_tracks.keys())}"
+                        f"アクティブID: {sorted(active_tracks.keys())} "
+                        f"拡張CSV記録: {csv_records}行"
                     )
 
         # リソース解放
@@ -938,11 +973,25 @@ class IntegratedVideoProcessor:
 
         # 処理完了時間
         total_time = time.time() - start_time
-        logger.info(f"動画処理完了!")
+        logger.info(f"🎉 動画処理完了!")
         logger.info(f"出力ファイル: {output_path}")
         logger.info(f"結果ログ: {result_log}")
         logger.info(f"処理時間: {total_time:.1f}秒")
         logger.info(f"平均処理速度: {frame_idx/total_time:.1f}fps")
+
+        # 最終結果の確認
+        if self.csv_logger:
+            final_records = self.csv_logger.log_count
+            logger.info(f"拡張CSV最終記録数: {final_records}行")
+
+            if final_records == 0:
+                logger.warning("拡張CSVにデータが記録されていません！")
+                logger.info("可能な原因:")
+                logger.info("  - 人物が検出されなかった")
+                logger.info("  - 信頼度閾値が高すぎる")
+                logger.info("  - キーポイント検出に失敗")
+            else:
+                logger.info(f"拡張CSVに {final_records}行のデータが記録されました")
 
         active_tracks = self.detector.id_tracker.get_active_tracks()
         logger.info(f"最終アクティブID: {sorted(active_tracks.keys())}")
