@@ -38,7 +38,7 @@ def main():
         k1=-0.1,           # 歪み係数（負の値で樽型歪みを補正）
         strength=1.0,      # 補正強度
         zoom_factor=1.3,   # ズーム倍率（1.0未満で引き、1.0超で寄り）
-        model_path="models/yolov8m-pose.pt"
+        model_path="models/yolo11m-pose.pt"
     )
 
     # 🔧 拡張CSVロガーを有効化（修正版）
