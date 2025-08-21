@@ -310,7 +310,7 @@ class EnhancedCSVLogger:
                 "", "", "", 0.0, "", False,
 
                 # メタデータ
-                video_source, "v1.0", "yolov8m-pose", ""
+                video_source, "v1.0", "yolo11m-pose", ""
             ]
 
             # データ長チェック
@@ -533,7 +533,7 @@ class OrderedIDTracker:
 class PostureDetectionSystem:
     """姿勢推定システムクラス（順序付きID割り振り版）"""
 
-    def __init__(self, model_path="models/yolov8m-pose.pt"):
+    def __init__(self, model_path="models/yolo11m-pose.pt"):
         self.model = YOLO(model_path)
 
         # 順序付きIDトラッカーを初期化
@@ -867,7 +867,7 @@ class PostureDetectionSystem:
 class IntegratedVideoProcessor:
     """統合動画処理システム（逆バレル補正版 + 順序付きID割り振り）"""
 
-    def __init__(self, k1=-0.1, strength=1.0, zoom_factor=0.8, model_path="yolov8m-pose.pt"):
+    def __init__(self, k1=-0.1, strength=1.0, zoom_factor=0.8, model_path="yolo11m-pose.pt"):
         self.corrector = VideoDistortionCorrector(k1, strength, zoom_factor)
         self.detector = PostureDetectionSystem(model_path)
 
