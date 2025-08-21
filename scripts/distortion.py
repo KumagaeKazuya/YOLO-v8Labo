@@ -92,6 +92,43 @@ class EnhancedCSVLogger:
             logger.error(f"CSV初期化エラー: {e}")
             raise
 
+    def safe_keypoint_access(self, keypoints, index, coord_index=None):
+        """安全なキーポイントアクセス（修正版）"""
+        try:
+            if index >= len(keypoints):
+                return 0.0
+
+            kp = keypoints[index]
+
+            # キーポイントの形状をチェック
+            if len(kp.shape) > 1:
+                # 2D配列の場合は最初の行を使用
+                kp = kp[0] if kp.shape[0] > 0 else np.array([0, 0])
+
+            if coord_index is None:
+                # 全体を返す場合
+                if len(kp) >= 3:
+                    return kp[:3]  # [x, y, conf]
+                elif len(kp) >= 2:
+                    return np.array([kp[0], kp[1], 0.0])  # conf=0.0をデフォルト
+                else:
+                    return np.array([0.0, 0.0, 0.0])
+            else:
+                # 特定の座標を返す場合
+                if coord_index < len(kp):
+                    return float(kp[coord_index])
+                elif coord_index == 2:  # confidence
+                    return 0.0  # confidenceがない場合は0.0
+                else:
+                    return 0.0
+
+        except Exception as e:
+            logger.warning(f"キーポイントアクセスエラー (index={index}, coord={coord_index}): {e}")
+            if coord_index is None:
+                return np.array([0.0, 0.0, 0.0])
+            else:
+                return 0.0
+
     def calculate_keypoint_features(self, keypoints, track_id):
         """キーポイントから特徴量を計算（簡素化版）"""
         features = {
@@ -112,17 +149,26 @@ class EnhancedCSVLogger:
         try:
             # 基本的な距離計算のみ実装
             if len(keypoints) >= 17:
-                # 鼻（index 0）、手首（index 9, 10）
-                nose = keypoints[0][:2] if keypoints[0][2] > 0.3 else None
-                left_wrist = keypoints[9][:2] if keypoints[9][2] > 0.3 else None
-                right_wrist = keypoints[10][:2] if keypoints[10][2] > 0.3 else None
+                # 安全にキーポイントを取得
+                nose = self.safe_keypoint_access(keypoints, 0)
+                left_wrist = self.safe_keypoint_access(keypoints, 9)
+                right_wrist = self.safe_keypoint_access(keypoints, 10)
+                left_shoulder = self.safe_keypoint_access(keypoints, 5)
+                right_shoulder = self.safe_keypoint_access(keypoints, 6)
+
+                # 有効性チェック（confidence > 0.3 または x,y > 0）
+                def is_valid_point(pt):
+                    if len(pt) >= 3:
+                        return pt[2] > 0.3 and pt[0] > 0 and pt[1] > 0
+                    else:
+                        return pt[0] > 0 and pt[1] > 0
 
                 # 手首-顔の距離
-                if nose is not None and left_wrist is not None:
-                    features['wrist_to_face_dist_left'] = float(np.linalg.norm(nose - left_wrist))
+                if is_valid_point(nose) and is_valid_point(left_wrist):
+                    features['wrist_to_face_dist_left'] = float(np.linalg.norm(nose[:2] - left_wrist[:2]))
 
-                if nose is not None and right_wrist is not None:
-                    features['wrist_to_face_dist_right'] = float(np.linalg.norm(nose - right_wrist))
+                if is_valid_point(nose) and is_valid_point(right_wrist):
+                    features['wrist_to_face_dist_right'] = float(np.linalg.norm(nose[:2] - right_wrist[:2]))
 
                 # 最小距離
                 valid_dists = [d for d in [features['wrist_to_face_dist_left'], 
@@ -131,16 +177,14 @@ class EnhancedCSVLogger:
                     features['min_wrist_face_dist'] = min(valid_dists)
 
                 # 肩幅
-                left_shoulder = keypoints[5][:2] if keypoints[5][2] > 0.3 else None
-                right_shoulder = keypoints[6][:2] if keypoints[6][2] > 0.3 else None
-
-                if left_shoulder is not None and right_shoulder is not None:
-                    features['shoulder_width'] = float(np.linalg.norm(left_shoulder - right_shoulder))
+                if is_valid_point(left_shoulder) and is_valid_point(right_shoulder):
+                    features['shoulder_width'] = float(np.linalg.norm(left_shoulder[:2] - right_shoulder[:2]))
 
         except Exception as e:
             logger.warning(f"キーポイント特徴量計算エラー: {e}")
 
         return features
+
 
     def calculate_image_quality(self, frame, bbox):
         """画像品質指標を計算（簡素化版）"""
@@ -177,7 +221,7 @@ class EnhancedCSVLogger:
             logger.warning(f"画像品質計算エラー: {e}")
             return {'brightness': 0, 'contrast': 0, 'blur_score': 0, 'noise_level': 0}
 
-    def log_detection(self, frame_idx, track_id, detection_data, frame, 
+    def log_detection(self, frame_idx, track_id, detection_data, frame,
                     phone_usage, phone_confidence, phone_method,
                     grid_row, grid_col, video_source="unknown"):
         """拡張検出ログを記録（修正版）"""
@@ -206,15 +250,15 @@ class EnhancedCSVLogger:
             # 画像品質計算
             quality_metrics = self.calculate_image_quality(frame, bbox)
 
-            # キーポイント座標をフラット化（17点×3座標=51列）
+            # キーポイント座標をフラット化（17点×3座標=51列）- 修正版
             kp_coords = []
             for i in range(17):
                 if i < len(keypoints):
-                    kp_coords.extend([
-                        float(keypoints[i][0]),
-                        float(keypoints[i][1]),
-                        float(keypoints[i][2])
-                    ])
+                    # 安全にキーポイントにアクセス
+                    x = self.safe_keypoint_access(keypoints, i, 0)
+                    y = self.safe_keypoint_access(keypoints, i, 1)
+                    conf = self.safe_keypoint_access(keypoints, i, 2)
+                    kp_coords.extend([float(x), float(y), float(conf)])
                 else:
                     kp_coords.extend([0.0, 0.0, 0.0])
 
@@ -275,7 +319,6 @@ class EnhancedCSVLogger:
 
             if actual_length != expected_length:
                 logger.error(f"データ長不一致: 期待{expected_length}, 実際{actual_length}")
-                logger.error(f"不足分: {expected_length - actual_length}")
 
                 # 不足分を埋める
                 while len(log_data) < expected_length:
@@ -494,6 +537,7 @@ class PostureDetectionSystem:
         self.model = YOLO(model_path)
 
         # 順序付きIDトラッカーを初期化
+        from scripts.distortion import OrderedIDTracker
         self.id_tracker = OrderedIDTracker(distance_threshold=100, max_missing_frames=30)
 
         # 人物の状態管理（track_idベース）
@@ -509,6 +553,34 @@ class PostureDetectionSystem:
         # グリッド分割設定を初期化
         self.split_ratios = [0.5, 0.5]  # 上下50%ずつ
         self.split_ratios_cols = [0.5, 0.5]  # 左右50%ずつ
+
+    def safe_keypoint_access(self, keypoints, index):
+        """安全なキーポイントアクセス"""
+        try:
+            if index >= len(keypoints):
+                return None
+
+            kp = keypoints[index]
+
+            # キーポイントの形状をチェック
+            if len(kp.shape) > 1:
+                # 2D配列の場合は最初の行を使用
+                kp = kp[0] if kp.shape[0] > 0 else np.array([0, 0])
+
+            # 座標の有効性チェック
+            if len(kp) >= 2:
+                x, y = kp[0], kp[1]
+                confidence = kp[2] if len(kp) > 2 else 0.0
+
+                if x > 0 and y > 0 and (len(kp) <= 2 or confidence > 0.3):
+                    return kp[:2]  # [x, y]のみ返す
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"キーポイントアクセスエラー (index={index}): {e}")
+            return None
+
 
     def smooth_detection(self, track_id, using_phone):
         """検出結果を平滑化（track_idベース）"""
@@ -529,30 +601,16 @@ class PostureDetectionSystem:
         return smoothed_phone
 
     def detect_phone_usage(self, keypoints):
-        """携帯電話使用を検出（エラーハンドリング強化）"""
+        """携帯電話使用を検出（修正版）"""
         try:
             # キーポイントの基本チェック
             if keypoints is None or keypoints.shape[0] < 17:
                 return False
 
-            # 必要なキーポイントのインデックス
-            KEYPOINT_INDICES = {
-                'nose': 0, 'left_wrist': 9, 'right_wrist': 10,
-                'neck': 1, 'left_shoulder': 5, 'right_shoulder': 6
-            }
-
-            # キーポイントの取得と検証
-            def get_valid_keypoint(idx):
-                if idx >= len(keypoints):
-                    return None
-                pt = keypoints[idx][:2]
-                if np.any(np.isnan(pt)) or np.allclose(pt, [0, 0]):
-                    return None
-                return pt
-
-            nose = get_valid_keypoint(KEYPOINT_INDICES['nose'])
-            left_wrist = get_valid_keypoint(KEYPOINT_INDICES['left_wrist'])
-            right_wrist = get_valid_keypoint(KEYPOINT_INDICES['right_wrist'])
+            # 必要なキーポイントを安全に取得
+            nose = self.safe_keypoint_access(keypoints, 0)
+            left_wrist = self.safe_keypoint_access(keypoints, 9)
+            right_wrist = self.safe_keypoint_access(keypoints, 10)
 
             # 基本的な携帯使用判定
             if all(pt is not None for pt in [nose, left_wrist, right_wrist]):
@@ -571,32 +629,30 @@ class PostureDetectionSystem:
             return False
 
     def detect_phone_usage_back_view(self, keypoints):
-        """背面からの携帯使用検出（エラーハンドリング追加）"""
+        """背面からの携帯使用検出（修正版）"""
         try:
             threshold = 60
 
-            # 必要なキーポイントのインデックス
-            indices = {'neck': 1, 'left_wrist': 9, 'right_wrist': 10,
-                    'left_shoulder': 5, 'right_shoulder': 6}
+            # 必要なキーポイントを安全に取得
+            neck = self.safe_keypoint_access(keypoints, 1)
+            left_wrist = self.safe_keypoint_access(keypoints, 9)
+            right_wrist = self.safe_keypoint_access(keypoints, 10)
+            left_shoulder = self.safe_keypoint_access(keypoints, 5)
+            right_shoulder = self.safe_keypoint_access(keypoints, 6)
 
-            # キーポイントの取得
-            points = {}
-            for name, idx in indices.items():
-                if idx >= len(keypoints):
-                    return False
-                pt = keypoints[idx][:2]
-                if np.any(np.isnan(pt)) or np.allclose(pt, [0, 0]):
-                    return False
-                points[name] = pt
+            # 全てのポイントが有効かチェック
+            points = [neck, left_wrist, right_wrist, left_shoulder, right_shoulder]
+            if any(pt is None for pt in points):
+                return False
 
             # 距離計算
             dist_left = min(
-                np.linalg.norm(points['left_wrist'] - points['neck']),
-                np.linalg.norm(points['left_wrist'] - points['left_shoulder'])
+                np.linalg.norm(left_wrist - neck),
+                np.linalg.norm(left_wrist - left_shoulder)
             )
             dist_right = min(
-                np.linalg.norm(points['right_wrist'] - points['neck']),
-                np.linalg.norm(points['right_wrist'] - points['right_shoulder'])
+                np.linalg.norm(right_wrist - neck),
+                np.linalg.norm(right_wrist - right_shoulder)
             )
 
             return min(dist_left, dist_right) < threshold
