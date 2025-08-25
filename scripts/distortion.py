@@ -471,6 +471,13 @@ class AdvancedPostureDetectionSystem:
             "forward_lean_threshold": 0.3,
         }
 
+        # スケルトン描画用の接続情報
+        self.skeleton_connections = [
+            [16, 14], [14, 12], [17, 15], [15, 13], [12, 13],  # 顔周り
+            [6, 12], [7, 13], [6, 7], [6, 8], [7, 9],         # 胴体・腕
+            [8, 10], [9, 11], [12, 14], [13, 15], [14, 16], [15, 17]  # 腕・脚
+        ]
+
         # グリッド分割設定
         self.split_ratios = [0.5, 0.5]
         self.split_ratios_cols = [0.5, 0.5]
@@ -478,6 +485,31 @@ class AdvancedPostureDetectionSystem:
         # 追跡用の履歴
         self.track_history = defaultdict(lambda: deque(maxlen=10))
         self.frame_count = 0
+
+        # FPS計算用
+        self.fps_counter = deque(maxlen=30)  # 過去30フレームの平均FPSを計算
+        self.last_frame_time = time.time()
+
+    def _draw_skeleton(self, frame: np.ndarray, keypoints: np.ndarray, color: Tuple[int, int, int]) -> None:
+        """スケルトン（骨格）を描画"""
+        try:
+            keypoints_2d = keypoints[:, :2] if keypoints.shape[1] >= 2 else keypoints
+
+            # スケルトン線を描画
+            for connection in self.skeleton_connections:
+                pt1_idx, pt2_idx = connection[0] - 1, connection[1] - 1  # 1-indexed to 0-indexed
+
+                if pt1_idx < len(keypoints_2d) and pt2_idx < len(keypoints_2d):
+                    pt1 = keypoints_2d[pt1_idx]
+                    pt2 = keypoints_2d[pt2_idx]
+
+                    # 両方のキーポイントが有効な場合のみ線を描画
+                    if (pt1[0] > 0 and pt1[1] > 0 and pt2[0] > 0 and pt2[1] > 0):
+                        cv2.line(frame, (int(pt1[0]), int(pt1[1])),
+                                (int(pt2[0]), int(pt2[1])), color, 2)
+
+        except Exception as e:
+            logger.warning(f"スケルトン描画エラー: {e}")
 
     def determine_person_orientation(self, keypoints: np.ndarray) -> PersonOrientation:
         """人物の向きを判定"""
@@ -503,7 +535,7 @@ class AdvancedPostureDetectionSystem:
             )
 
             shoulder_points_visible = sum(
-                1 for p in [left_shoulder, right_shoulder] 
+                1 for p in [left_shoulder, right_shoulder]
                 if not np.allclose(p, [0, 0])
             )
 
@@ -908,8 +940,50 @@ class AdvancedPostureDetectionSystem:
 
         cv2.putText(frame, id_info, (20, height - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         cv2.putText(frame, f"Total Persons: {len(active_ids)}", (20, height - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
+        self._draw_fps(frame)
         return frame
+
+    def _calculate_fps(self) -> float:
+        """現在のFPSを計算"""
+        current_time = time.time()
+        frame_time = current_time - self.last_frame_time
+        self.last_frame_time = current_time
+
+        if frame_time > 0:
+            fps = 1.0 / frame_time
+            self.fps_counter.append(fps)
+
+        # 過去数フレームの平均FPSを返す
+        if len(self.fps_counter) > 0:
+            return sum(self.fps_counter) / len(self.fps_counter)
+        return 0.0
+
+    def _draw_fps(self, frame: np.ndarray) -> None:
+        """FPS情報を画面に描画"""
+        current_fps = self._calculate_fps()
+
+        # FPS表示位置（右上角）
+        height, width = frame.shape[:2]
+        fps_text = f"FPS: {current_fps:.1f}"
+
+        # テキストサイズを測定
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.8
+        thickness = 2
+        (text_width, text_height), baseline = cv2.getTextSize(fps_text, font, font_scale, thickness)
+
+        # 背景矩形を描画（見やすくするため）
+        bg_x1 = width - text_width - 20
+        bg_y1 = 10
+        bg_x2 = width - 10
+        bg_y2 = text_height + baseline + 20
+
+        cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)  # 黒背景
+        cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2), (255, 255, 255), 1)  # 白枠
+
+        # FPSテキストを描画
+        cv2.putText(frame, fps_text, (bg_x1 + 10, bg_y1 + text_height + 5),
+                font, font_scale, (0, 255, 0), thickness)
 
     def _draw_detection_on_frame(self, frame, detection_result: DetectionResult, keypoints):
         """フレームに検出結果を描画"""
@@ -958,6 +1032,9 @@ class AdvancedPostureDetectionSystem:
         for pt in keypoints.astype(int):
             if len(pt) >= 2 and pt[0] > 0 and pt[1] > 0:
                 cv2.circle(frame, tuple(pt[:2]), 3, (255, 255, 0), -1)
+
+        # スケルトン描画
+        self._draw_skeleton(frame, keypoints, color)
 
 class IntegratedVideoProcessor:
     """統合動画処理システム（改良版）"""
