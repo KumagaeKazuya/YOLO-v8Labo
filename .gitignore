@@ -37,3 +37,11 @@ cython_debug/
 
 # csvの分析ファイルはプロジェクトに含めない
 data/*.csv
+
+# 基本的にすべての .pt を無視
+*.pt
+
+# ただし以下は追跡対象にする（!で除外）
+!models/yolo11m-pose.pt
+!models/yolo11n-pose.pt
+!models/yolo11s-pose.pt
