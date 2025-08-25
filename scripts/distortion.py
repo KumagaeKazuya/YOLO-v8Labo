@@ -555,7 +555,7 @@ class AdvancedPostureDetectionSystem:
             visible_count = sum(1 for kp in keypoints if kp[0] > 0 and kp[1] > 0)
 
             def safe_distance(p1, p2):
-                if (np.any(np.isnan(p1)) or np.any(np.isnan(p2)) or 
+                if (np.any(np.isnan(p1)) or np.any(np.isnan(p2)) or
                     np.allclose(p1, [0, 0]) or np.allclose(p2, [0, 0])):
                     return float("inf")
                 return np.linalg.norm(p1 - p2)
@@ -666,7 +666,7 @@ class AdvancedPostureDetectionSystem:
 
         # 片手が顔の近くにある場合
         elif (features.hand_face_distance_left < self.config["phone_distance_threshold"] or
-              features.hand_face_distance_right < self.config["phone_distance_threshold"]):
+            features.hand_face_distance_right < self.config["phone_distance_threshold"]):
             if features.head_tilt > self.config["head_angle_threshold"]:
                 return PhoneUsageState.LOOKING_DOWN, confidence * 0.8
             else:
