@@ -28,7 +28,7 @@ VIDEO_CONFIG = {
 
 MODEL_CONFIG = {
     # YOLOモデル設定
-    "model_path": "models/yolo11m-pose.pt",
+    "model_path": "models/yolo11x-pose.pt",
     "conf_threshold": 0.4,      # 検出信頼度閾値
     "phone_distance_threshold": 100, # スマホ使用判定距離
 }

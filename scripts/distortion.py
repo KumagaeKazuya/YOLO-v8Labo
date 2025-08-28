@@ -215,7 +215,7 @@ class EnhancedCSVLogger:
                 "", "", "", 0.0, "", False,
 
                 # メタデータ
-                video_source, "v2.0", "yolo11m-pose-advanced", ""
+                video_source, "v2.0", "yolo11x-pose-advanced", ""
             ]
 
             # データ長チェック
@@ -450,7 +450,7 @@ class OrderedIDTracker:
 class AdvancedPostureDetectionSystem:
     """高度な姿勢検出システム（yolo_checker.py準拠）"""
 
-    def __init__(self, model_path="models/yolo11m-pose.pt"):
+    def __init__(self, model_path="models/yolo11x-pose.pt"):
         self.model = YOLO(model_path)
         self.id_tracker = OrderedIDTracker(distance_threshold=100, max_missing_frames=30)
         self.person_states = {}
@@ -1039,7 +1039,7 @@ class AdvancedPostureDetectionSystem:
 class IntegratedVideoProcessor:
     """統合動画処理システム（改良版）"""
 
-    def __init__(self, k1=-0.1, k2=0.0, p1=0.0, p2=0.0, k3=0.0, alpha=0.6, focal_scale=0.9, model_path="yolo11m-pose.pt"):
+    def __init__(self, k1=-0.1, k2=0.0, p1=0.0, p2=0.0, k3=0.0, alpha=0.6, focal_scale=0.9, model_path="yolo11x-pose.pt"):
         # 改良版歪み補正器
         self.corrector = VideoDistortionCorrector(k1, k2, p1, p2, k3, alpha, focal_scale)
         # 高度な姿勢検出システム
