@@ -875,7 +875,7 @@ class AdvancedPostureDetectionSystem:
         tracked_detections = self.id_tracker.update_tracks(detections)
 
         # グリッド描画
-        self.draw_monitor_grid(frame, self.split_ratios_cols, self.split_ratios)
+        # self.draw_monitor_grid(frame, self.split_ratios_cols, self.split_ratios)
 
         # 検出結果の処理
         detection_results = []
@@ -1014,16 +1014,16 @@ class AdvancedPostureDetectionSystem:
             PhoneUsageState.TRANSITIONING: "Transit"
         }
 
-        orientation_short = {
+        '''orientation_short = {
             PersonOrientation.FRONT_FACING: "F",
             PersonOrientation.BACK_FACING: "B",
             PersonOrientation.SIDE_FACING: "S",
             PersonOrientation.UNCERTAIN: "?"
-        }
+        }'''
 
         label = f"ID:{detection_result.track_id} {state_names[detection_result.phone_state]}"
-        label += f" [{orientation_short[detection_result.orientation]}]"
-        label += f" [R{detection_result.grid_position[0]},C{detection_result.grid_position[1]}]"
+        '''label += f" [{orientation_short[detection_result.orientation]}]"
+        label += f" [R{detection_result.grid_position[0]},C{detection_result.grid_position[1]}]"'''
 
         # ラベル描画
         cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
