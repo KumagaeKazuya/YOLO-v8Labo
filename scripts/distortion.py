@@ -140,8 +140,11 @@ class EnhancedCSVLogger:
             logger.error(f"CSV初期化エラー: {e}")
             raise
 
-    def log_detection_result(self, detection_result: DetectionResult, frame,
-                        keypoints, grid_row, grid_col, video_source="unknown"):
+    def log_detection_result_with_keypoint_conf(self, detection_result: DetectionResult, frame,
+                        keypoints, grid_row, grid_col, video_source="unknown",
+                        yolo_confidence=0.0, keypoint_confidences=None,
+                        avg_keypoint_conf=0.0, min_keypoint_conf=0.0,
+                        max_keypoint_conf=0.0, visible_keypoints=0):
         """DetectionResultオブジェクトから拡張CSVにログを記録"""
         try:
             self.log_count += 1
@@ -218,12 +221,10 @@ class EnhancedCSVLogger:
                 video_source, "v2.0", "yolo11x-pose-advanced", ""
             ]
 
-            # データ長チェック
-            if len(log_data) != len(self.headers):
-                logger.error(f"データ長不一致: 期待{len(self.headers)}, 実際{len(log_data)}")
-                while len(log_data) < len(self.headers):
-                    log_data.append("")
-                log_data = log_data[:len(self.headers)]
+            # データ長調整
+            while len(log_data) < len(self.headers):
+                log_data.append("")
+            log_data = log_data[:len(self.headers)]
 
             # CSV書き込み
             if self.csv_writer:
@@ -841,17 +842,33 @@ class AdvancedPostureDetectionSystem:
             if result.keypoints is None or result.boxes is None:
                 continue
 
+            # 検出結果を整理
+        detections = []
+        for result in results:
+            if result.keypoints is None or result.boxes is None:
+                continue
+
             try:
                 kps_list = result.keypoints.xy.cpu().numpy()
+                kps_conf = result.keypoints.conf.cpu().numpy() if result.keypoints.conf is not None else None
                 boxes = result.boxes.xyxy.cpu().numpy()
                 confs = result.boxes.conf.cpu().numpy()
 
-                for kps, box, conf in zip(kps_list, boxes, confs):
+                for i, (kps, box, conf) in enumerate(zip(kps_list, boxes, confs)):
                     if conf < self.config["conf_threshold"]:
                         continue
 
                     if kps.shape[0] < 17:
                         continue
+
+                    # キーポイント信頼度を統合
+                    if kps_conf is not None and i < len(kps_conf):
+                        # YOLOのキーポイント信頼度を使用
+                        kps_with_conf = np.column_stack([kps, kps_conf[i]])
+                    else:
+                        # 信頼度が取得できない場合はYOLO検出信頼度をベースにする
+                        default_conf = np.ones(kps.shape[0]) * float(conf) * 0.8
+                        kps_with_conf = np.column_stack([kps, default_conf])
 
                     # 中心座標計算
                     valid_points = kps[kps[:, 0] > 0]
@@ -863,8 +880,9 @@ class AdvancedPostureDetectionSystem:
                     detections.append({
                         'center': (cx, cy),
                         'bbox': box,
-                        'keypoints': kps,
-                        'confidence': conf
+                        'keypoints': kps_with_conf,
+                        'yolo_confidence': float(conf),
+                        'keypoint_confidences': kps_conf[i] if kps_conf is not None and i < len(kps_conf) else None
                     })
 
             except Exception as e:
@@ -884,6 +902,8 @@ class AdvancedPostureDetectionSystem:
             kps = detection['keypoints']
             box = detection['bbox']
             cx, cy = detection['center']
+            yolo_confidence = detection['yolo_confidence']
+            keypoint_confidences = detection.get('keypoint_confidences', None)
 
             # 高度な特徴量抽出
             features = self.extract_advanced_features(kps)
@@ -893,6 +913,21 @@ class AdvancedPostureDetectionSystem:
             # スマホ使用状態分類
             phone_state_raw, state_confidence = self.classify_phone_usage(features)
             phone_state = self.smooth_detection(track_id, phone_state_raw)
+
+            # キーポイント信頼度の統計計算
+            if keypoint_confidences is not None:
+                avg_keypoint_conf = float(np.mean(keypoint_confidences[keypoint_confidences > 0]))
+                min_keypoint_conf = float(np.min(keypoint_confidences[keypoint_confidences > 0]))
+                max_keypoint_conf = float(np.max(keypoint_confidences))
+                visible_keypoints = int(np.sum(keypoint_confidences > 0))
+            else:
+                avg_keypoint_conf = yolo_confidence * 0.8
+                min_keypoint_conf = yolo_confidence * 0.6
+                max_keypoint_conf = yolo_confidence
+                visible_keypoints = int(np.sum(kps[:, 0] > 0))
+
+            # 総合信頼度（YOLO信頼度 × 平均キーポイント信頼度）
+            overall_confidence = yolo_confidence * avg_keypoint_conf
 
             # グリッド位置
             bbox_tuple = tuple(map(int, box))
@@ -905,7 +940,7 @@ class AdvancedPostureDetectionSystem:
                 track_id=track_id,
                 timestamp=time.time(),
                 phone_state=phone_state,
-                confidence=state_confidence,
+                confidence=overall_confidence,
                 features=features,
                 bbox=bbox_tuple,
                 grid_position=grid_pos,
@@ -915,23 +950,32 @@ class AdvancedPostureDetectionSystem:
 
             detection_results.append(detection_result)
 
-            # 基本CSVに結果を記録
+            # 基本CSVに結果を記録（キーポイント信頼度情報を追加）
             if csv_writer:
-                # 従来形式に合わせて簡略化した値を記録
                 using_phone = phone_state not in [PhoneUsageState.NOT_USING, PhoneUsageState.UNCERTAIN]
-                csv_writer.writerow([frame_idx, track_id, using_phone, row, col])
+                csv_writer.writerow([
+                    frame_idx, track_id, using_phone, row, col,
+                    f"{yolo_confidence:.3f}",  # YOLO検出信頼度
+                    f"{avg_keypoint_conf:.3f}",  # 平均キーポイント信頼度
+                    f"{overall_confidence:.3f}",  # 総合信頼度
+                    visible_keypoints  # 可視キーポイント数
+                ])
 
-            # 拡張CSVに結果を記録
+            # 拡張CSVに結果を記録（キーポイント信頼度を詳細に記録）
             if enhanced_csv_logger is not None:
                 try:
-                    enhanced_csv_logger.log_detection_result(
-                        detection_result, frame, kps, row, col, "google_drive"
+                    enhanced_csv_logger.log_detection_result_with_keypoint_conf(
+                        detection_result, frame, kps, row, col, "google_drive",
+                        yolo_confidence, keypoint_confidences, avg_keypoint_conf,
+                        min_keypoint_conf, max_keypoint_conf, visible_keypoints
                     )
                 except Exception as csv_error:
                     logger.error(f"拡張CSV記録エラー: {csv_error}")
 
-            # 描画処理
-            self._draw_detection_on_frame(frame, detection_result, kps)
+
+            # 描画処理（状態を表示せず、信頼度のみ表示）
+            self._draw_detection_on_frame_with_confidence(frame, detection_result, kps,
+                                                        yolo_confidence, avg_keypoint_conf, overall_confidence)
 
         # デバッグ情報の表示
         active_tracks = self.id_tracker.get_active_tracks()
@@ -985,7 +1029,7 @@ class AdvancedPostureDetectionSystem:
         cv2.putText(frame, fps_text, (bg_x1 + 10, bg_y1 + text_height + 5),
                 font, font_scale, (0, 255, 0), thickness)
 
-    def _draw_detection_on_frame(self, frame, detection_result: DetectionResult, keypoints):
+    def _draw_detection_on_frame_with_confidence(self, frame, detection_result: DetectionResult, keypoints, yolo_conf, keypoint_conf, overall_conf):
         """フレームに検出結果を描画"""
         x1, y1, x2, y2 = detection_result.bbox
 
@@ -1029,18 +1073,28 @@ class AdvancedPostureDetectionSystem:
             PersonOrientation.UNCERTAIN: "?"
         }'''
 
+        # ラベル作成（IDと信頼度のみ）
         label = f"ID:{detection_result.track_id}"
+        conf_label = f"YOLO:{yolo_conf:.2f} KP:{keypoint_conf:.2f}"
         # label += f" [ {state_names[detection_result.phone_state]} ]"
         '''label += f" [{orientation_short[detection_result.orientation]}]"
         label += f" [R{detection_result.grid_position[0]},C{detection_result.grid_position[1]}]"'''
 
         # ラベル描画
-        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        cv2.putText(frame, label, (x1, y1 - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        cv2.putText(frame, conf_label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-        # キーポイント描画
-        for pt in keypoints.astype(int):
-            if len(pt) >= 2 and pt[0] > 0 and pt[1] > 0:
-                cv2.circle(frame, tuple(pt[:2]), 3, (255, 255, 0), -1)
+        # ラベル描画
+        # cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+        # キーポイント描画（信頼度に応じて色を変える）
+        for i, pt in enumerate(keypoints.astype(int)):
+            if len(pt) >= 3 and pt[0] > 0 and pt[1] > 0:
+                kp_conf = pt[2] if len(pt) > 2 else 0.8
+                kp_color_intensity = int(255 * kp_conf)
+                kp_color = (255, kp_color_intensity, 0)  # 青から黄色のグラデーション
+                radius = max(2, int(5 * kp_conf))  # 信頼度に応じて点のサイズを変更
+                cv2.circle(frame, tuple(pt[:2]), radius, kp_color, -1)
 
         # スケルトン描画
         self._draw_skeleton(frame, keypoints, color)
@@ -1096,11 +1150,13 @@ class IntegratedVideoProcessor:
 
         with open(result_log, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(["frame", "person_id", "using_phone", "grid_row", "grid_col"])
+            writer.writerow([
+                "frame", "person_id", "using_phone", "grid_row", "grid_col",
+                "yolo_confidence", "avg_keypoint_confidence", "overall_confidence", "visible_keypoints"
+            ])
 
             frame_idx = 0
             start_time = time.time()
-            all_detection_results = []
 
             logger.info("改良版動画処理を開始...")
 
@@ -1131,6 +1187,10 @@ class IntegratedVideoProcessor:
                 # フレーム情報表示
                 cv2.putText(frame, f"Frame: {frame_idx}/{total_frames}", (20, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+
+                # キーポイント信頼度情報表示
+                cv2.putText(frame, f"Keypoint-based Detection", (20, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
                 # 拡張CSV記録状況表示
                 if self.csv_logger:
