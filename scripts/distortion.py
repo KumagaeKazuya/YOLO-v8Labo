@@ -992,12 +992,20 @@ class AdvancedPostureDetectionSystem:
         # 状態に応じて色を設定
         color_map = {
             PhoneUsageState.NOT_USING: (0, 255, 0),           # 緑
+            PhoneUsageState.HOLDING_NEAR_FACE: (0, 255, 0), # オレンジ
+            PhoneUsageState.LOOKING_DOWN: (0, 255, 0),        # 赤
+            PhoneUsageState.BOTH_HANDS_UP: (0, 255, 0),     # マゼンタ
+            PhoneUsageState.UNCERTAIN: (0, 255, 0),     # グレー
+            PhoneUsageState.TRANSITIONING: (0, 255, 0),     # シアン
+        }
+        '''color_map = {
+            PhoneUsageState.NOT_USING: (0, 255, 0),           # 緑
             PhoneUsageState.HOLDING_NEAR_FACE: (0, 165, 255), # オレンジ
             PhoneUsageState.LOOKING_DOWN: (0, 0, 255),        # 赤
             PhoneUsageState.BOTH_HANDS_UP: (255, 0, 255),     # マゼンタ
             PhoneUsageState.UNCERTAIN: (128, 128, 128),       # グレー
             PhoneUsageState.TRANSITIONING: (255, 255, 0),     # シアン
-        }
+        }'''
 
         color = color_map.get(detection_result.phone_state, (255, 255, 255))
 
