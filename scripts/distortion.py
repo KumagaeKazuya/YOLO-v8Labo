@@ -1021,7 +1021,8 @@ class AdvancedPostureDetectionSystem:
             PersonOrientation.UNCERTAIN: "?"
         }'''
 
-        label = f"ID:{detection_result.track_id} {state_names[detection_result.phone_state]}"
+        label = f"ID:{detection_result.track_id}"
+        # label += f" [ {state_names[detection_result.phone_state]} ]"
         '''label += f" [{orientation_short[detection_result.orientation]}]"
         label += f" [R{detection_result.grid_position[0]},C{detection_result.grid_position[1]}]"'''
 
