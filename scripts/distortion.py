@@ -1081,19 +1081,17 @@ class AdvancedPostureDetectionSystem:
         label += f" [R{detection_result.grid_position[0]},C{detection_result.grid_position[1]}]"'''
 
         # ラベル描画
-        cv2.putText(frame, label, (x1, y1 - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        cv2.putText(frame, conf_label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        cv2.putText(frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        # cv2.putText(frame, conf_label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         # ラベル描画
         # cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-        # キーポイント描画（信頼度に応じて色を変える）
+        # キーポイント描画（全て緑色に統一）
         for i, pt in enumerate(keypoints.astype(int)):
             if len(pt) >= 3 and pt[0] > 0 and pt[1] > 0:
-                kp_conf = pt[2] if len(pt) > 2 else 0.8
-                kp_color_intensity = int(255 * kp_conf)
-                kp_color = (255, kp_color_intensity, 0)  # 青から黄色のグラデーション
-                radius = max(2, int(5 * kp_conf))  # 信頼度に応じて点のサイズを変更
+                kp_color = (0, 255, 0)  # 緑色固定
+                radius = 3  # 固定サイズ
                 cv2.circle(frame, tuple(pt[:2]), radius, kp_color, -1)
 
         # スケルトン描画
