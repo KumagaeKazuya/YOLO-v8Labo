@@ -71,7 +71,6 @@ class EnhancedCSVLogger:
         self.csv_file = None
         self.csv_writer = None
         self.start_time = time.time()
-        self.prev_keypoints = {}  # track_id -> previous keypoints for motion calculation
         self.log_count = 0
         # モデルを変更した時はここを更新
         self.model_name = model_name
@@ -129,13 +128,6 @@ class EnhancedCSVLogger:
 
             # バウンディングボックス情報
             x1, y1, x2, y2 = detection_result.bbox
-            ''' もしかしたら必要になるかも
-            bbox_width = x2 - x1
-            bbox_height = y2 - y1
-            bbox_area = bbox_width * bbox_height
-            center_x = (x1 + x2) / 2
-            center_y = (y1 + y2) / 2
-            '''
 
             # キーポイント座標をフラット化
             kp_coords = []
@@ -147,9 +139,6 @@ class EnhancedCSVLogger:
                     kp_coords.extend([x, y, conf])
                 else:
                     kp_coords.extend([0.0, 0.0, 0.0])
-
-            # 画像品質計算
-            #quality_metrics = self.calculate_image_quality(frame, detection_result.bbox)
 
             # ログデータ準備
             log_data = [
@@ -188,37 +177,6 @@ class EnhancedCSVLogger:
         except Exception as e:
             logger.error(f"拡張ログ記録エラー: {e}")
 
-    '''def calculate_image_quality(self, frame, bbox):
-        """画像品質指標を計算"""
-        try:
-            x1, y1, x2, y2 = map(int, bbox)
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
-
-            if x2 <= x1 or y2 <= y1:
-                return {'brightness': 0, 'contrast': 0, 'blur_score': 0, 'noise_level': 0}
-
-            roi = frame[y1:y2, x1:x2]
-            if roi.size == 0:
-                return {'brightness': 0, 'contrast': 0, 'blur_score': 0, 'noise_level': 0}
-
-            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) > 2 else roi
-
-            brightness = float(np.mean(gray_roi))
-            contrast = float(np.std(gray_roi))
-            blur_score = float(cv2.Laplacian(gray_roi, cv2.CV_64F).var())
-            noise_level = 0.0
-
-            return {
-                'brightness': brightness,
-                'contrast': contrast,
-                'blur_score': blur_score,
-                'noise_level': noise_level
-            }
-        except Exception as e:
-            logger.warning(f"画像品質計算エラー: {e}")
-            return {'brightness': 0, 'contrast': 0, 'blur_score': 0, 'noise_level': 0}'''
-
     def close(self):
         """CSVファイルをクローズ"""
         try:
@@ -229,21 +187,6 @@ class EnhancedCSVLogger:
                 logger.info(f"総記録数: {self.log_count}行")
         except Exception as e:
             logger.error(f"ログ記録エラー: {e}")
-
-    # 古いメソッドを削除または空のメソッドとして定義
-    def log_detection_result_with_keypoint_conf(self, *args, **kwargs):
-        """互換性のための空メソッド - 使用しない"""
-        logger.warning("log_detection_result_with_keypoint_confは使用されていません")
-        pass
-
-    def calculate_image_quality(self, frame, bbox):
-        """互換性のための空メソッド（使用しない）"""
-        return {
-            'brightness': 0.0,
-            'contrast': 0.0,
-            'blur_score': 0.0,
-            'noise_level': 0.0
-        }
 
 class VideoDistortionCorrector:
     """動画の歪み補正クラス（改良版 - yolo_checker.py準拠）"""
@@ -852,8 +795,6 @@ class AdvancedPostureDetectionSystem:
         # 順序付きIDトラッカーで追跡更新
         tracked_detections = self.id_tracker.update_tracks(detections)
 
-        # グリッド描画
-        # self.draw_monitor_grid(frame, self.split_ratios_cols, self.split_ratios)
 
         # 検出結果の処理
         detection_results = []
@@ -993,59 +934,16 @@ class AdvancedPostureDetectionSystem:
         """フレームに検出結果を描画"""
         x1, y1, x2, y2 = detection_result.bbox
 
-        # 状態に応じて色を設定
-        color_map = {
-            PhoneUsageState.NOT_USING: (0, 255, 0),           # 緑
-            PhoneUsageState.HOLDING_NEAR_FACE: (0, 255, 0), # オレンジ
-            PhoneUsageState.LOOKING_DOWN: (0, 255, 0),        # 赤
-            PhoneUsageState.BOTH_HANDS_UP: (0, 255, 0),     # マゼンタ
-            PhoneUsageState.UNCERTAIN: (0, 255, 0),     # グレー
-            PhoneUsageState.TRANSITIONING: (0, 255, 0),     # シアン
-        }
-        '''color_map = {
-            PhoneUsageState.NOT_USING: (0, 255, 0),           # 緑
-            PhoneUsageState.HOLDING_NEAR_FACE: (0, 165, 255), # オレンジ
-            PhoneUsageState.LOOKING_DOWN: (0, 0, 255),        # 赤
-            PhoneUsageState.BOTH_HANDS_UP: (255, 0, 255),     # マゼンタ
-            PhoneUsageState.UNCERTAIN: (128, 128, 128),       # グレー
-            PhoneUsageState.TRANSITIONING: (255, 255, 0),     # シアン
-        }'''
-
-        color = color_map.get(detection_result.phone_state, (255, 255, 255))
+        color = (0, 255, 0)  # 全て緑色に統一
 
         # バウンディングボックス描画
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
 
-        # ラベル作成
-        state_names = {
-            PhoneUsageState.NOT_USING: "Awake",
-            PhoneUsageState.HOLDING_NEAR_FACE: "Phone",
-            PhoneUsageState.LOOKING_DOWN: "LookDown",
-            PhoneUsageState.BOTH_HANDS_UP: "BothHands",
-            PhoneUsageState.UNCERTAIN: "Uncertain",
-            PhoneUsageState.TRANSITIONING: "Transit"
-        }
-
-        '''orientation_short = {
-            PersonOrientation.FRONT_FACING: "F",
-            PersonOrientation.BACK_FACING: "B",
-            PersonOrientation.SIDE_FACING: "S",
-            PersonOrientation.UNCERTAIN: "?"
-        }'''
-
         # ラベル作成（IDと信頼度のみ）
         label = f"ID:{detection_result.track_id}"
-        conf_label = f"YOLO:{yolo_conf:.2f} KP:{keypoint_conf:.2f}"
-        # label += f" [ {state_names[detection_result.phone_state]} ]"
-        '''label += f" [{orientation_short[detection_result.orientation]}]"
-        label += f" [R{detection_result.grid_position[0]},C{detection_result.grid_position[1]}]"'''
 
         # ラベル描画
         cv2.putText(frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        # cv2.putText(frame, conf_label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-        # ラベル描画
-        # cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
         # キーポイント描画（全て緑色に統一）
         for i, pt in enumerate(keypoints.astype(int)):
