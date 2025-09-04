@@ -66,13 +66,15 @@ class DetectionResult:
 class EnhancedCSVLogger:
     """機械学習用拡張CSVロガー"""
 
-    def __init__(self, csv_path="enhanced_detection_log.csv"):
+    def __init__(self, csv_path="enhanced_detection_log.csv", model_name="yolo11x-pose"):
         self.csv_path = csv_path
         self.csv_file = None
         self.csv_writer = None
         self.start_time = time.time()
         self.prev_keypoints = {}  # track_id -> previous keypoints for motion calculation
         self.log_count = 0
+        # モデルを変更した時はここを更新
+        self.model_name = model_name
 
         # CSV ヘッダー定義
         self.headers = [
@@ -80,42 +82,19 @@ class EnhancedCSVLogger:
             "timestamp", "frame_idx", "relative_time_sec", "frame_interval_ms",
 
             # 人物識別情報
-            "person_id", "track_confidence", "detection_confidence",
+            "tracking_id",
 
-            # 位置情報
+            # 検出枠座標
             "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2",
-            "bbox_width", "bbox_height", "bbox_area",
-            "center_x", "center_y", "grid_row", "grid_col",
 
-            # 詳細行動判定（改良版）
-            "phone_state", "phone_state_confidence", "person_orientation",
-            "phone_detection_method",  # "front_view", "back_view", "failed"
+            # 検出枠信頼度
+            "detection_confidence",
 
-            # キーポイント座標 (17点 x 3座標 = 51列)
+            # キーポイント座標と信頼度 (17点 x 3座標 = 51列)
             *[f"kp_{i}_{coord}" for i in range(17) for coord in ["x", "y", "conf"]],
 
-            # 高度な動作特徴量
-            "head_angle", "hand_face_distance_left", "hand_face_distance_right",
-            "shoulder_hand_angle_left", "shoulder_hand_angle_right",
-            "head_tilt", "neck_forward", "movement_speed", "pose_change_magnitude",
-
-            # 姿勢分析（詳細）
-            "shoulder_width", "torso_lean_angle", "arm_symmetry",
-            "posture_stability", "attention_direction",
-
-            # 画像品質・環境要因
-            "frame_brightness", "frame_contrast", "blur_score", "noise_level",
-
-            # 時系列特徴
-            "consecutive_phone_frames", "phone_state_duration_sec",
-            "position_stability", "tracking_quality",
-
-            # アノテーション用
-            "manual_label_phone", "manual_label_posture", "manual_label_attention",
-            "annotation_confidence", "annotator_id", "review_required",
-
-            # メタデータ
-            "video_source", "processing_version", "model_version", "notes"
+            # モデル情報（キーポイント座標の後）
+            "model_name"
         ]
 
         self.init_csv()
@@ -140,11 +119,7 @@ class EnhancedCSVLogger:
             logger.error(f"CSV初期化エラー: {e}")
             raise
 
-    def log_detection_result_with_keypoint_conf(self, detection_result: DetectionResult, frame,
-                        keypoints, grid_row, grid_col, video_source="unknown",
-                        yolo_confidence=0.0, keypoint_confidences=None,
-                        avg_keypoint_conf=0.0, min_keypoint_conf=0.0,
-                        max_keypoint_conf=0.0, visible_keypoints=0):
+    def log_detection_result_simplified(self, detection_result: DetectionResult, keypoints, yolo_confidence=0.0):
         """DetectionResultオブジェクトから拡張CSVにログを記録"""
         try:
             self.log_count += 1
@@ -154,11 +129,13 @@ class EnhancedCSVLogger:
 
             # バウンディングボックス情報
             x1, y1, x2, y2 = detection_result.bbox
+            ''' もしかしたら必要になるかも
             bbox_width = x2 - x1
             bbox_height = y2 - y1
             bbox_area = bbox_width * bbox_height
             center_x = (x1 + x2) / 2
             center_y = (y1 + y2) / 2
+            '''
 
             # キーポイント座標をフラット化
             kp_coords = []
@@ -172,53 +149,27 @@ class EnhancedCSVLogger:
                     kp_coords.extend([0.0, 0.0, 0.0])
 
             # 画像品質計算
-            quality_metrics = self.calculate_image_quality(frame, detection_result.bbox)
+            #quality_metrics = self.calculate_image_quality(frame, detection_result.bbox)
 
             # ログデータ準備
             log_data = [
                 # 基本情報
                 timestamp, detection_result.frame_id, relative_time, 33.33,
 
-                # 人物識別情報
-                detection_result.track_id, 0.9, detection_result.confidence,
+                # トラッキングID
+                detection_result.track_id,
 
-                # 位置情報
+                # 検出枠座標
                 float(x1), float(y1), float(x2), float(y2),
-                float(bbox_width), float(bbox_height), float(bbox_area),
-                float(center_x), float(center_y), grid_row, grid_col,
 
-                # 詳細行動判定
-                detection_result.phone_state.value, detection_result.confidence,
-                detection_result.orientation.value, "advanced_detection",
+                # 検出枠信頼度
+                yolo_confidence,
 
-                # キーポイント座標（51列）
+                # キーポイント座標と信頼度(51列)
                 *kp_coords,
 
-                # 高度な動作特徴量
-                detection_result.features.head_angle,
-                detection_result.features.hand_face_distance_left,
-                detection_result.features.hand_face_distance_right,
-                detection_result.features.shoulder_hand_angle_left,
-                detection_result.features.shoulder_hand_angle_right,
-                detection_result.features.head_tilt,
-                detection_result.features.neck_forward,
-                0.0, 0.0,  # movement_speed, pose_change_magnitude
-
-                # 姿勢分析（詳細）
-                100.0, 0.0, 0.8, 0.9, "forward",  # shoulder_width等
-
-                # 画像品質
-                quality_metrics['brightness'], quality_metrics['contrast'],
-                quality_metrics['blur_score'], quality_metrics['noise_level'],
-
-                # 時系列特徴（仮値）
-                0, 0.0, 0.9, detection_result.features.confidence_score,
-
-                # アノテーション用（空欄）
-                "", "", "", 0.0, "", False,
-
-                # メタデータ
-                video_source, "v2.0", "yolo11x-pose-advanced", ""
+                # モデル情報 (キーポイント座標の後)
+                self.model_name,
             ]
 
             # データ長調整
@@ -232,12 +183,12 @@ class EnhancedCSVLogger:
                 self.csv_file.flush()
 
                 if self.log_count % 30 == 0:
-                    logger.info(f"拡張CSV記録継続: {self.log_count}行目")
+                    logger.info(f"CSV記録継続: {self.log_count}行目")
 
         except Exception as e:
             logger.error(f"拡張ログ記録エラー: {e}")
 
-    def calculate_image_quality(self, frame, bbox):
+    '''def calculate_image_quality(self, frame, bbox):
         """画像品質指標を計算"""
         try:
             x1, y1, x2, y2 = map(int, bbox)
@@ -266,7 +217,7 @@ class EnhancedCSVLogger:
             }
         except Exception as e:
             logger.warning(f"画像品質計算エラー: {e}")
-            return {'brightness': 0, 'contrast': 0, 'blur_score': 0, 'noise_level': 0}
+            return {'brightness': 0, 'contrast': 0, 'blur_score': 0, 'noise_level': 0}'''
 
     def close(self):
         """CSVファイルをクローズ"""
@@ -274,10 +225,25 @@ class EnhancedCSVLogger:
             if self.csv_file:
                 self.csv_file.flush()
                 self.csv_file.close()
-                logger.info(f"拡張CSVログ保存完了: {self.csv_path}")
+                logger.info(f"CSVログ保存完了: {self.csv_path}")
                 logger.info(f"総記録数: {self.log_count}行")
         except Exception as e:
-            logger.error(f"CSVクローズエラー: {e}")
+            logger.error(f"ログ記録エラー: {e}")
+
+    # 古いメソッドを削除または空のメソッドとして定義
+    def log_detection_result_with_keypoint_conf(self, *args, **kwargs):
+        """互換性のための空メソッド - 使用しない"""
+        logger.warning("log_detection_result_with_keypoint_confは使用されていません")
+        pass
+
+    def calculate_image_quality(self, frame, bbox):
+        """互換性のための空メソッド（使用しない）"""
+        return {
+            'brightness': 0.0,
+            'contrast': 0.0,
+            'blur_score': 0.0,
+            'noise_level': 0.0
+        }
 
 class VideoDistortionCorrector:
     """動画の歪み補正クラス（改良版 - yolo_checker.py準拠）"""
@@ -836,12 +802,6 @@ class AdvancedPostureDetectionSystem:
         x_grid = [0, int(width * self.split_ratios_cols[0]), width]
         y_grid = [0, int(height * self.split_ratios[0]), height]
 
-        # 検出結果を整理
-        detections = []
-        for result in results:
-            if result.keypoints is None or result.boxes is None:
-                continue
-
             # 検出結果を整理
         detections = []
         for result in results:
@@ -964,18 +924,18 @@ class AdvancedPostureDetectionSystem:
             # 拡張CSVに結果を記録（キーポイント信頼度を詳細に記録）
             if enhanced_csv_logger is not None:
                 try:
-                    enhanced_csv_logger.log_detection_result_with_keypoint_conf(
-                        detection_result, frame, kps, row, col, "google_drive",
-                        yolo_confidence, keypoint_confidences, avg_keypoint_conf,
-                        min_keypoint_conf, max_keypoint_conf, visible_keypoints
-                    )
+                    enhanced_csv_logger.log_detection_result_simplified(
+                        detection_result, kps, yolo_confidence
+                )
                 except Exception as csv_error:
-                    logger.error(f"拡張CSV記録エラー: {csv_error}")
+                    logger.error(f"簡略化CSV記録エラー: {csv_error}")
+
 
 
             # 描画処理（状態を表示せず、信頼度のみ表示）
             self._draw_detection_on_frame_with_confidence(frame, detection_result, kps,
-                                                        yolo_confidence, avg_keypoint_conf, overall_confidence)
+                                                    yolo_confidence, avg_keypoint_conf, overall_confidence)
+
 
         # デバッグ情報の表示
         active_tracks = self.id_tracker.get_active_tracks()
@@ -1107,6 +1067,7 @@ class IntegratedVideoProcessor:
         self.detector = AdvancedPostureDetectionSystem(model_path)
         # 拡張CSVロガー
         self.csv_logger = None
+        self.model_path = model_path
 
     def set_csv_logger(self, csv_path="enhanced_detection_log.csv"):
         """CSVロガーを設定"""
@@ -1149,7 +1110,7 @@ class IntegratedVideoProcessor:
         with open(result_log, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([
-                "frame", "person_id", "using_phone", "grid_row", "grid_col",
+                "frame", "tracking_id", "using_phone", "grid_row", "grid_col",
                 "yolo_confidence", "avg_keypoint_confidence", "overall_confidence", "visible_keypoints"
             ])
 
