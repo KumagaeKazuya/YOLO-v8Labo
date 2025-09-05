@@ -1,8 +1,9 @@
 # main.py
 
 import os
+import glob
 from scripts.distortion import IntegratedVideoProcessor
-from scripts.downloader import download_file_from_google_drive
+# from scripts.downloader import download_file_from_google_drive
 import logging
 import json
 
@@ -40,6 +41,79 @@ MODEL_CONFIG = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+def find_video_files(video_dir="videos"):
+    """videosフォルダ内の動画ファイルを検索"""
+    video_extensions = [
+        "*.mp4", "*.avi", "*.mov", "*.mkv", "*.flv", "*.wmv",
+        "*.MP4", "*.AVI", "*.MOV", "*.MKV", "*.FLV", "*.WMV"
+    ]
+
+    video_files = []
+    for ext in video_extensions:
+        pattern = os.path.join(video_dir, ext)
+        video_files.extend(glob.glob(pattern))
+
+    # ファイル名でソート
+    video_files.sort()
+    return video_files
+
+def select_video_file():
+    """動画ファイルを手動選択"""
+    video_dir = "videos"
+
+    # videosディレクトリが存在しない場合は作成(gitから持ってくる場合に使う)
+    if not os.path.exists(video_dir):
+        os.makedirs(video_dir)
+        logger.info(f"videosディレクトリを作成: {video_dir}")
+
+    # 動画ファイルを検索
+    video_files = find_video_files(video_dir)
+
+    if not video_files:
+        logger.error(f"{video_dir}フォルダに動画ファイルが見つかりません")
+        logger.error("対応形式: .mp4, .avi, .mov, .mkv, .flv, .wmv")
+        logger.error(f"動画ファイルを{video_dir}フォルダに配置してから再実行してください。")
+        return None
+
+    # 動画ファイル一覧を表示
+    logger.info(f"\n{video_dir}フォルダ内の動画ファイル:")
+    for i, video_file in enumerate(video_files, 1):
+        file_size = os.path.getsize(video_file)
+        file_name = os.path.basename(video_file)
+        # ファイルサイズを見やすい単位で表示
+        if file_size > 1024 * 1024:
+            size_str = f"{file_size / (1024 * 1024):.1f} MB"
+        elif file_size > 1024:
+            size_str = f"{file_size / 1024:.1f} KB"
+        else:
+            size_str = f"{file_size} bytes"
+
+        logger.info(f"  {i}. {file_name} ({size_str})")
+
+    # ユーザーのファイル選択
+    while True:
+        try:
+            print(f"\n処理する動画を選択してください (1-{len(video_files)}):")
+            choice = input("選択番号を入力: ").strip()
+
+            if choice.isdigit():
+                choice_num = int(choice)
+
+                if 1 <= choice_num <= len(video_files):
+                    selected_video = video_files[choice_num - 1]
+                    logger.info(f"✅ 選択された動画: {selected_video}")
+                    return selected_video
+                else:
+                    print(f"❌ 1から{len(video_files)}の数字を入力してください")
+            else:
+                print("❌ 数字を入力してください")
+
+        except KeyboardInterrupt:
+            logger.info("選択がキャンセルされました")
+            return None
+        except Exception as e:
+            logger.error(f"選択エラー: {e}")
+
 def main():
     """メイン関数（改良版）"""
     logger.info("=== 改良版姿勢検出システム開始 ===")
@@ -52,21 +126,17 @@ def main():
     logger.info(f"  プレビュー: {'有効' if VIDEO_CONFIG['show_preview'] else '無効'}")
     logger.info(f"  拡張CSV: {'有効' if VIDEO_CONFIG['enable_enhanced_csv'] else '無効'}")
 
-    # Google Drive設定
-    google_drive_file_id = "1QaYIFAlXRqcThZU9aLGWWQTCUXs6WJCU"
+    # 動画ファイル選択
+    logger.info("=== 動画ファイル選択 ===")
+    video_path = select_video_file()
 
-    # 動画ダウンロード
-    try:
-        video_path = download_file_from_google_drive(google_drive_file_id)
-        logger.info(f"動画ダウンロード成功: {video_path}")
-    except Exception as e:
-        logger.error(f"動画ダウンロード失敗: {e}")
-        # フォールバック: ローカルファイルを使用
-        video_path = "input.mp4"
-        if not os.path.exists(video_path):
-            logger.error(f"ローカル動画ファイルも見つかりません: {video_path}")
-            return
-        logger.info(f"ローカル動画ファイルを使用: {video_path}")
+    if not video_path:
+        logger.error("動画ファイルが選択されませんでした。処理を終了します。")
+        return
+
+    if not os.path.exists(video_path):
+        logger.error(f"選択された動画ファイルが存在しません: {video_path}")
+        return
 
     # 出力ディレクトリ設定
     output_dir = "videos"
@@ -87,10 +157,13 @@ def main():
         model_path=MODEL_CONFIG["model_path"]
     )
 
-    # 拡張CSVロガーを有効化
+    # 動画ファイル名を基にCSVファイル名を生成
+    video_basename = os.path.splitext(os.path.basename(video_path))[0]
     enhanced_csv_path = None
+
+    # 拡張CSVロガーを有効化
     if VIDEO_CONFIG["enable_enhanced_csv"]:
-        enhanced_csv_path = os.path.join(data_dir, "enhanced_detection_log_v2.csv")
+        enhanced_csv_path = os.path.join(data_dir, f"enhanced_detection_log_{video_basename}.csv")
 
         # 既存ファイル削除（クリーンスタート）
         if os.path.exists(enhanced_csv_path):
@@ -107,15 +180,9 @@ def main():
             logger.error("拡張CSVロガー有効化失敗")
             return
 
-    # 動画ファイルの存在確認
-    if not os.path.exists(video_path):
-        logger.error(f"動画ファイルが見つかりません: {video_path}")
-        return
-    logger.info(f"動画ファイル確認済み: {video_path}")
-
-    # 出力パスの設定
-    output_video = os.path.join(output_dir, "output_advanced_posture_detection.mp4")
-    result_log = os.path.join(data_dir, "frame_results_v2.csv")
+    # 出力パスの設定(動画ファイルをもとに生成)
+    output_video = os.path.join(output_dir, f"output_{video_basename}_advanced_posture_detection.mp4")
+    result_log = os.path.join(data_dir, f"frame_results_{video_basename}.csv")
 
     # 既存ファイル削除（クリーンスタート）
     for file_path in [output_video, result_log]:
@@ -160,7 +227,15 @@ def main():
         for file_path, description in files_to_check:
             if os.path.exists(file_path):
                 file_size = os.path.getsize(file_path)
-                logger.info(f"{description}: {file_path} ({file_size:,} bytes)")
+                # ファイルサイズを見やすい単位で表示
+                if file_size > 1024 * 1024:
+                    size_str = f"{file_size / (1024 * 1024):.1f} MB"
+                elif file_size > 1024:
+                    size_str = f"{file_size / 1024:.1f} KB"
+                else:
+                    size_str = f"{file_size} bytes"
+
+                logger.info(f"{description}: {file_path} ({size_str})")
 
                 # CSVファイルの行数チェック
                 if file_path.endswith('.csv'):
@@ -262,6 +337,23 @@ def validate_environment():
             logger.info(f"ディレクトリ作成: {dir_name}")
         else:
             logger.info(f"ディレクトリ確認: {dir_name}")
+
+    # videosフォルダの動画ファイル確認
+    video_files = find_video_files("videos")
+    if video_files:
+        logger.info(f"動画ファイル発見: {len(video_files)}個")
+        for i, video_file in enumerate(video_files, 1):
+            file_name = os.path.basename(video_file)
+            file_size = os.path.getsize(video_file)
+            if file_size > 1024 * 1024:
+                size_str = f"{file_size / (1024 * 1024):.1f} MB"
+            else:
+                size_str = f"{file_size / 1024:.1f} KB"
+            logger.info(f"  {i}. {file_name} ({size_str})")
+    else:
+        logger.warning("動画ファイルが見つかりません")
+        logger.info("videosフォルダに以下の形式の動画ファイルを配置してください:")
+        logger.info("  対応形式: .mp4, .avi, .mov, .mkv, .flv, .wmv")
 
     # モデルファイルの確認
     model_path = MODEL_CONFIG["model_path"]
