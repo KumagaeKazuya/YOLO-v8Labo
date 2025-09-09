@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import time
+import hashlib
+import json
 from ultralytics import YOLO
 from collections import defaultdict, deque
 import logging
@@ -17,6 +19,231 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+class VideoProcessingHistory:
+    """動画処理履歴管理クラス"""
+
+    def __init__(self, history_file="data/video_processing_history.json"):
+        self.history_file = history_file
+        self.history = self.load_history()
+
+    def load_history(self):
+        """処理履歴を読み込む"""
+        try:
+            if os.path.exists(self.history_file):
+                with open(self.history_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            logger.warning(f"処理履歴読み込みエラー: {e}")
+            return {}
+
+    def save_history(self):
+        """処理履歴を保存"""
+        try:
+            os.makedirs(os.path.dirname(self.history_file), exist_ok=True)
+            with open(self.history_file, 'w', encoding='utf-8') as f:
+                json.dump(self.history, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"処理履歴保存エラー: {e}")
+
+    def get_video_hash(self, video_path):
+        """動画ファイルのハッシュ値を計算"""
+        try:
+            stat = os.stat(video_path)
+            hash_data = {
+                "basename": os.path.splitext(os.path.basename(video_path))[0],
+                "size": stat.st_size,
+                "mtime": stat.st_mtime
+            }
+            hash_str = json.dumps(hash_data, sort_keys=True)
+            return hashlib.md5(hash_str.encode()).hexdigest()[:16]
+        except Exception as e:
+            logger.error(f"動画ハッシュ計算エラー: {e}")
+            return None
+
+    def get_processing_record(self, video_hash):
+        """動画の処理記録を取得"""
+        return self.history.get(video_hash, None)
+
+    def should_overwrite(self, video_hash, estimated_processing_time, quality_threshold=1.0):
+        """上書きすべきかを判定（品質劣化防止機能強化）"""
+        record = self.get_processing_record(video_hash)
+
+        if record is None:
+            return True, "初回処理"
+
+        previous_time = record.get("processing_time", 0)
+
+        # 推定時間が0以下の場合は安全のため処理実行
+        if estimated_processing_time <= 0:
+            return True, "推定時間が無効のため安全処理"
+
+        # 前回の処理時間が0以下の場合は処理実行
+        if previous_time <= 0:
+            return True, "前回処理時間が無効のため再処理"
+
+        # 推定時間と前回処理時間の比較
+        time_ratio = estimated_processing_time / previous_time
+
+        # 推定時間が前回より長い場合（処理品質向上の可能性）
+        if time_ratio >= quality_threshold:
+            improvement_ratio = time_ratio
+            return True, f"処理品質向上期待 (推定時間が{improvement_ratio:.1f}倍に増加)"
+
+        # 推定時間が前回より短い場合（処理品質劣化の可能性）
+        else:
+            degradation_ratio = previous_time / estimated_processing_time
+            return False, f"処理品質劣化防止 (推定時間が{degradation_ratio:.1f}倍高速化→品質低下の可能性)"
+
+
+    def add_processing_record(self, video_hash, video_basename, processing_time, total_frames, output_files):
+        """処理記録を追加"""
+        record = {
+            "video_basename": video_basename,
+            "processing_time": processing_time,
+            "total_frames": total_frames,
+            "fps_average": total_frames / processing_time if processing_time > 0 else 0,
+            "timestamp": time.time(),
+            "execution_count": self.history.get(video_hash, {}).get("execution_count", 0) + 1,
+            "output_files": output_files
+        }
+        self.history[video_hash] = record
+        self.save_history()
+        return record
+
+class SmartFileManager:
+    """スマートファイル管理クラス"""
+
+    def __init__(self, base_output_dir="videos", base_data_dir="data", quality_threshold=1.0):
+        self.base_output_dir = base_output_dir
+        self.base_data_dir = base_data_dir
+        self.video_history = VideoProcessingHistory()
+        self.quality_threshold = quality_threshold  # 品質劣化防止閾値
+
+    def generate_output_paths(self, video_path):
+        """動画に基づいて出力パスを生成"""
+        video_basename = os.path.splitext(os.path.basename(video_path))[0]
+        video_hash = self.video_history.get_video_hash(video_path)
+
+        if video_hash is None:
+            # ハッシュ計算に失敗した場合は基本ファイル名のみ使用
+            suffix = ""
+            logger.warning("動画ハッシュ計算失敗、基本ファイル名のみ使用")
+        else:
+            suffix = f"_{video_hash}"
+
+        # 出力ファイルパス生成（動画別に分離）
+        output_video = os.path.join(
+            self.base_output_dir,
+            f"output_{video_basename}{suffix}_advanced_posture_detection.mp4"
+        )
+        basic_csv = os.path.join(
+            self.base_data_dir,
+            f"frame_results_{video_basename}{suffix}.csv"
+        )
+        enhanced_csv = os.path.join(
+            self.base_data_dir,
+            f"enhanced_detection_log_{video_basename}{suffix}.csv"
+        )
+
+        return {
+            "output_video": output_video,
+            "basic_csv": basic_csv,
+            "enhanced_csv": enhanced_csv,
+            "video_hash": video_hash,
+            "video_basename": video_basename
+        }
+
+    def check_existing_files(self, file_paths):
+        """既存ファイルの存在をチェック"""
+        existing_files = {}
+        for key, path in file_paths.items():
+            if key not in ["video_hash", "video_basename"] and os.path.exists(path):
+                existing_files[key] = {
+                    "path": path,
+                    "size": os.path.getsize(path),
+                    "mtime": os.path.getmtime(path)
+                }
+        return existing_files
+
+    def should_process_video(self, video_path, estimated_processing_time, force_process=False):
+        """動画を処理すべきかを判定"""
+        if force_process:
+            return True, "強制処理モード", {}
+
+        file_paths = self.generate_output_paths(video_path)
+        existing_files = self.check_existing_files(file_paths)
+
+        if not existing_files:
+            return True, "初回処理（ファイルなし）", file_paths
+
+        video_hash = file_paths["video_hash"]
+        if video_hash is None:
+            return True, "ハッシュ計算失敗（安全のため処理実行）", file_paths
+
+        # 品質劣化防止閾値を使用して判定
+        should_overwrite, reason = self.video_history.should_overwrite(
+            video_hash, estimated_processing_time, self.quality_threshold
+        )
+
+        if should_overwrite:
+            return True, reason, file_paths
+        else:
+            return False, reason, file_paths
+
+    def cleanup_existing_files(self, file_paths):
+        """既存ファイルを削除（品質向上時のみ - CSV保護機能付き）"""
+        logger.info("🔄 品質向上のため既存ファイルを削除中...")
+
+        deleted_files = []
+        for key, path in file_paths.items():
+            if key not in ["video_hash", "video_basename"] and os.path.exists(path):
+                try:
+                    # ファイル情報を記録
+                    file_size = os.path.getsize(path)
+                    size_mb = file_size / (1024 * 1024)
+
+                    os.remove(path)
+                    deleted_files.append((key, os.path.basename(path), size_mb))
+                    logger.info(f"品質向上のため削除: {os.path.basename(path)} ({size_mb:.1f}MB)")
+                except Exception as e:
+                    logger.error(f"ファイル削除エラー {path}: {e}")
+
+        if deleted_files:
+            logger.info(f"📁 削除完了: {len(deleted_files)}ファイル")
+            for key, filename, size_mb in deleted_files:
+                logger.info(f"  {key}: {filename} ({size_mb:.1f}MB)")
+        else:
+            logger.info("削除対象ファイルなし")
+
+    def log_processing_completion(self, video_path, file_paths, processing_time, total_frames):
+        """処理完了をログに記録"""
+        video_hash = file_paths["video_hash"]
+        video_basename = file_paths["video_basename"]
+
+        if video_hash is None:
+            logger.warning("動画ハッシュなしのため履歴記録をスキップ")
+            return
+
+        output_files = {
+            key: path for key, path in file_paths.items()
+            if key not in ["video_hash", "video_basename"]
+        }
+
+        record = self.video_history.add_processing_record(
+            video_hash, video_basename, processing_time, total_frames, output_files
+        )
+
+        # 処理品質情報をログ出力
+        fps_average = record.get("fps_average", 0)
+        execution_count = record.get("execution_count", 1)
+
+        logger.info(f"📊 処理品質記録更新:")
+        logger.info(f"  実行回数: {execution_count}回目")
+        logger.info(f"  処理時間: {processing_time:.1f}秒")
+        logger.info(f"  平均FPS: {fps_average:.1f}")
+        logger.info(f"  総フレーム数: {total_frames}")
 
 class PhoneUsageState(Enum):
     """スマホ使用状態の詳細分類"""
@@ -66,7 +293,7 @@ class DetectionResult:
 class EnhancedCSVLogger:
     """機械学習用拡張CSVロガー"""
 
-    def __init__(self, csv_path="enhanced_detection_log.csv", model_name="yolo11x-pose"):
+    def __init__(self, csv_path="enhanced_detection_log.csv", model_name="yolo11x-pose", overwrite_existing=True):
         self.csv_path = csv_path
         self.csv_file = None
         self.csv_writer = None
@@ -74,6 +301,8 @@ class EnhancedCSVLogger:
         self.log_count = 0
         # モデルを変更した時はここを更新
         self.model_name = model_name
+        # self.file_manager = SmartFileManager()  # スマートファイル管理を追加
+        self.overwrite_existing = overwrite_existing  # ← この行を追加
 
         # CSV ヘッダー定義
         self.headers = [
@@ -102,17 +331,33 @@ class EnhancedCSVLogger:
         """CSV ファイルを初期化"""
         try:
             # ディレクトリ作成
-            os.makedirs(os.path.dirname(self.csv_path), exist_ok=True)
+            csv_dir = os.path.dirname(self.csv_path)
+            if csv_dir:
+                os.makedirs(csv_dir, exist_ok=True)
 
+            # 既存ファイルのチェック
+            if os.path.exists(self.csv_path) and not self.overwrite_existing:
+                file_size = os.path.getsize(self.csv_path)
+                mod_time = os.path.getmtime(self.csv_path)
+                mod_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mod_time))
+
+                logger.warning(f"拡張CSVファイルが既に存在: {os.path.basename(self.csv_path)}")
+                logger.warning(f"サイズ: {file_size:,} bytes, 更新: {mod_time_str}")
+                logger.warning("既存ファイルを保持します（重複防止）")
+
+                # ダミーファイルハンドルを作成（書き込みは無効化）
+                self.csv_file = None
+                self.csv_writer = None
+                return
+
+            # 新規作成または上書き
             self.csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
             self.csv_writer = csv.writer(self.csv_file)
             self.csv_writer.writerow(self.headers)
-
-            # 即座にフラッシュしてヘッダーを書き込み
             self.csv_file.flush()
 
-            logger.info(f"拡張CSVログを初期化: {self.csv_path}")
-            logger.info(f"CSVヘッダー: {self.headers}")
+            logger.info(f"拡張CSVログ初期化: {os.path.basename(self.csv_path)}")
+            logger.info(f"CSVヘッダー列数: {len(self.headers)}")
 
         except Exception as e:
             logger.error(f"CSV初期化エラー: {e}")
@@ -120,6 +365,10 @@ class EnhancedCSVLogger:
 
     def log_detection_result_simplified(self, detection_result: DetectionResult, keypoints, yolo_confidence=0.0):
         """DetectionResultオブジェクトから拡張CSVにログを記録"""
+        # CSVライターが無効化されている場合はスキップ
+        if self.csv_writer is None:
+            return
+
         try:
             self.log_count += 1
             current_time = time.time()
@@ -183,10 +432,12 @@ class EnhancedCSVLogger:
             if self.csv_file:
                 self.csv_file.flush()
                 self.csv_file.close()
-                logger.info(f"CSVログ保存完了: {self.csv_path}")
+                logger.info(f"CSVログ保存完了: {os.path.basename(self.csv_path)}")
                 logger.info(f"総記録数: {self.log_count}行")
+            elif self.csv_path and os.path.exists(self.csv_path):
+                logger.info(f"既存CSVファイルを保持: {os.path.basename(self.csv_path)}")
         except Exception as e:
-            logger.error(f"ログ記録エラー: {e}")
+            logger.error(f"ログクローズエラー: {e}")
 
 class VideoDistortionCorrector:
     """動画の歪み補正クラス（改良版 - yolo_checker.py準拠）"""
@@ -966,23 +1217,152 @@ class IntegratedVideoProcessor:
         # 拡張CSVロガー
         self.csv_logger = None
         self.model_path = model_path
+        # スマートファイル管理
+        self.file_manager = SmartFileManager()
 
-    def set_csv_logger(self, csv_path="enhanced_detection_log.csv"):
-        """CSVロガーを設定"""
+    def estimate_processing_time(self, video_path):
+        """動画の処理時間を推定"""
         try:
-            self.csv_logger = EnhancedCSVLogger(csv_path)
-            logger.info(f"拡張CSVロガー初期化成功: {csv_path}")
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return 0
+
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+
+            # 基本推定式（実際の環境に応じて調整）
+            base_time_per_frame = 0.1  # 1フレームあたりの基本処理時間
+            resolution_factor = (width * height) / (1920 * 1080)
+
+            estimated_time = total_frames * base_time_per_frame * resolution_factor
+
+            logger.info(f"推定処理時間: {estimated_time:.1f}秒 ({total_frames}フレーム, {width}x{height})")
+            return estimated_time
+
         except Exception as e:
-            logger.error(f"拡張CSVロガー初期化失敗: {e}")
+            logger.warning(f"処理時間推定エラー: {e}")
+            return 0
+
+    def process_video_with_smart_management(self, input_path, show_preview=True, apply_correction=True, force_process=False):
+        """スマートファイル管理付きの動画処理（CSV保護機能強化）"""
+
+        # 処理時間を推定
+        estimated_time = self.estimate_processing_time(input_path)
+
+        # 処理すべきかを判定
+        should_process, reason, file_paths = self.file_manager.should_process_video(
+            input_path, estimated_time, force_process
+        )
+
+        if not should_process:
+            logger.info(f"⏭️  処理をスキップ: {reason}")
+
+            # 既存ファイル情報を表示（CSV保護情報を含む）
+            existing_files = self.file_manager.check_existing_files(file_paths)
+            logger.info("=== 🔒 既存ファイル保護情報 ===")
+            for key, file_info in existing_files.items():
+                size_mb = file_info["size"] / (1024 * 1024)
+                mod_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(file_info["mtime"]))
+
+                # CSVファイルの保護状況を明示
+                if "csv" in key.lower():
+                    protection_status = "🔒 保護中"
+                else:
+                    protection_status = "🔒 保護中"
+
+                logger.info(f"{key}: {os.path.basename(file_info['path'])} ({size_mb:.1f}MB, 更新: {mod_time_str}) {protection_status}")
+
+            # ユーザーに確認
+            print(f"\n🔒 既存の処理結果が品質劣化防止により保護されています。")
+            print(f"スキップ理由: {reason}")
+            print("📊 保護対象:")
+            print(f"  ・動画ファイル: {os.path.basename(file_paths.get('output_video', 'N/A'))}")
+            print(f"  ・基本CSV: {os.path.basename(file_paths.get('basic_csv', 'N/A'))}")
+            print(f"  ・拡張CSV: {os.path.basename(file_paths.get('enhanced_csv', 'N/A'))}")
+            print("\nそれでも再処理しますか？（既存の全ファイルが削除されます）")
+            user_choice = input("再処理する場合は 'y' を入力: ").lower().strip()
+
+            if user_choice != 'y':
+                logger.info("⏹️  品質劣化防止により処理をスキップしました")
+                logger.info("💡 より長い処理時間が見込まれる場合に自動実行されます")
+                return False
+
+            logger.info("🔄 ユーザー選択により品質保護を解除して再処理を実行")
+
+        # 既存ファイルをクリーンアップ（CSV含む）
+        if should_process or user_choice == 'y':
+            self.file_manager.cleanup_existing_files(file_paths)
+
+        # 実際の動画処理を実行
+        logger.info(f"📹 動画処理開始: {reason}")
+        logger.info(f"📁 出力ファイル:")
+        logger.info(f"  動画: {os.path.basename(file_paths['output_video'])}")
+        logger.info(f"  基本CSV: {os.path.basename(file_paths['basic_csv'])}")
+        logger.info(f"  拡張CSV: {os.path.basename(file_paths['enhanced_csv'])}")
+
+        # 拡張CSVロガーを設定（動画別ファイル、常に上書き）
+        try:
+            self.csv_logger = EnhancedCSVLogger(
+                file_paths["enhanced_csv"],
+                model_name=os.path.basename(self.model_path),
+                overwrite_existing=True  # 品質向上時は必ず上書き
+            )
+            logger.info(f"✅ 拡張CSVロガー初期化成功: {os.path.basename(file_paths['enhanced_csv'])}")
+        except Exception as e:
+            logger.error(f"❌ 拡張CSVロガー初期化失敗: {e}")
+            self.csv_logger = None
+
+        # 従来のprocess_videoメソッドを呼び出し
+        success = self.process_video(
+            input_path,
+            file_paths["output_video"],
+            file_paths["basic_csv"],
+            show_preview,
+            apply_correction
+        )
+
+        if success:
+            # 処理時間を記録
+            processing_time = getattr(self, '_last_processing_time', estimated_time)
+            total_frames = getattr(self, '_last_total_frames', 0)
+
+            self.file_manager.log_processing_completion(
+                input_path, file_paths, processing_time, total_frames
+            )
+
+            logger.info(f"✅ 全ファイル処理完了: {file_paths['video_basename']}")
+            logger.info("📊 保護されたファイル:")
+            logger.info(f"  ・動画: {os.path.basename(file_paths['output_video'])}")
+            logger.info(f"  ・基本CSV: {os.path.basename(file_paths['basic_csv'])}")
+            logger.info(f"  ・拡張CSV: {os.path.basename(file_paths['enhanced_csv'])}")
+
+        return success
+
+    def set_csv_logger(self, csv_path="enhanced_detection_log.csv", overwrite_existing=True):
+        """CSVロガーを設定（main.py互換性 - 品質保護対応）"""
+        try:
+            self.csv_logger = EnhancedCSVLogger(
+                csv_path,
+                model_name=os.path.basename(self.model_path),
+                overwrite_existing=overwrite_existing
+            )
+            logger.info(f"✅ 拡張CSVロガー初期化成功: {os.path.basename(csv_path)}")
+        except Exception as e:
+            logger.error(f"❌ 拡張CSVロガー初期化失敗: {e}")
             self.csv_logger = None
 
     def process_video(self, input_path, output_path, result_log="frame_results.csv",
-                    show_preview=True, apply_correction=True):
-        """動画を処理（改良版）"""
+                            show_preview=True, apply_correction=True):
+        """動画を処理（main.py互換性メソッド）"""
+        start_time = time.time()
+
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
             logger.error(f"動画ファイルを開けません: {input_path}")
-            return
+            return False
 
         # 動画情報取得
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -1005,97 +1385,102 @@ class IntegratedVideoProcessor:
         os.makedirs(os.path.dirname(result_log), exist_ok=True)
         detection_count = 0
 
-        with open(result_log, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "frame", "tracking_id", "using_phone", "grid_row", "grid_col",
-                "yolo_confidence", "avg_keypoint_confidence", "overall_confidence", "visible_keypoints"
-            ])
+        try:
+            with open(result_log, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "frame", "tracking_id", "using_phone", "grid_row", "grid_col",
+                    "yolo_confidence", "avg_keypoint_confidence", "overall_confidence", "visible_keypoints"
+                ])
 
-            frame_idx = 0
-            start_time = time.time()
+                frame_idx = 0
+                logger.info("改良版動画処理を開始...")
 
-            logger.info("改良版動画処理を開始...")
-
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                frame_idx += 1
-
-                # 歪み補正適用
-                if apply_correction:
-                    frame = self.corrector.apply_correction(frame)
-
-                # 姿勢検出処理
-                try:
-                    frame = self.detector.process_frame(
-                        frame, frame_idx, writer, self.csv_logger
-                    )
-
-                    # 検出結果をカウント
-                    if self.csv_logger and hasattr(self.csv_logger, 'log_count'):
-                        detection_count = self.csv_logger.log_count
-
-                except Exception as detection_error:
-                    logger.error(f"フレーム{frame_idx}処理エラー: {detection_error}")
-
-                # フレーム情報表示
-                cv2.putText(frame, f"Frame: {frame_idx}/{total_frames}", (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-
-                # キーポイント信頼度情報表示
-                cv2.putText(frame, f"Keypoint-based Detection", (20, 80),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
-                # 拡張CSV記録状況表示
-                if self.csv_logger:
-                    cv2.putText(frame, f"Enhanced CSV: {detection_count} records", (20, 80),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
-                # プレビュー表示
-                if show_preview:
-                    cv2.imshow("Advanced Posture Detection System", frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        logger.info("処理が中断されました")
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
                         break
 
-                # 結果保存
-                out.write(frame)
+                    frame_idx += 1
 
-                # 進行状況表示
-                if frame_idx % 30 == 0:
-                    elapsed = time.time() - start_time
-                    fps_current = frame_idx / elapsed
-                    progress = (frame_idx / total_frames) * 100
-                    eta = (total_frames - frame_idx) / fps_current if fps_current > 0 else 0
+                    # 歪み補正適用
+                    if apply_correction:
+                        frame = self.corrector.apply_correction(frame)
 
-                    active_tracks = self.detector.id_tracker.get_active_tracks()
-                    logger.info(
-                        f"進行状況: {progress:.1f}% ({frame_idx}/{total_frames}) "
-                        f"処理速度: {fps_current:.1f}fps 残り: {eta:.1f}s "
-                        f"アクティブID: {sorted(active_tracks.keys())} "
-                        f"拡張CSV: {detection_count}行"
-                    )
+                    # 姿勢検出処理
+                    try:
+                        frame = self.detector.process_frame(
+                            frame, frame_idx, writer, self.csv_logger
+                        )
 
-        # リソース解放
-        cap.release()
-        out.release()
-        cv2.destroyAllWindows()
+                        # 検出結果をカウント
+                        if self.csv_logger and hasattr(self.csv_logger, 'log_count'):
+                            detection_count = self.csv_logger.log_count
 
-        # CSVロガーをクローズ
-        if self.csv_logger:
-            self.csv_logger.close()
+                    except Exception as detection_error:
+                        logger.error(f"フレーム{frame_idx}処理エラー: {detection_error}")
+
+                    # フレーム情報表示
+                    cv2.putText(frame, f"Frame: {frame_idx}/{total_frames}", (20, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+
+                    # 拡張CSV記録状況表示
+                    if self.csv_logger:
+                        cv2.putText(frame, f"Enhanced CSV: {detection_count} records", (20, 80),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+                    # プレビュー表示
+                    if show_preview:
+                        cv2.imshow("Advanced Posture Detection System", frame)
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            logger.info("処理が中断されました")
+                            break
+
+                    # 結果保存
+                    out.write(frame)
+
+                    # 進行状況表示
+                    if frame_idx % 30 == 0:
+                        elapsed = time.time() - start_time
+                        fps_current = frame_idx / elapsed
+                        progress = (frame_idx / total_frames) * 100
+                        eta = (total_frames - frame_idx) / fps_current if fps_current > 0 else 0
+
+                        active_tracks = self.detector.id_tracker.get_active_tracks()
+                        logger.info(
+                            f"進行状況: {progress:.1f}% ({frame_idx}/{total_frames}) "
+                            f"処理速度: {fps_current:.1f}fps 残り: {eta:.1f}s "
+                            f"アクティブID: {sorted(active_tracks.keys())} "
+                            f"拡張CSV: {detection_count}行"
+                        )
+
+        except Exception as e:
+            logger.error(f"動画処理エラー: {e}")
+            return False
+        finally:
+            # リソース解放
+            cap.release()
+            out.release()
+            cv2.destroyAllWindows()
+
+            # CSVロガーをクローズ
+            if self.csv_logger:
+                self.csv_logger.close()
+
+        # 処理時間と統計を記録
+        processing_time = time.time() - start_time
+        self._last_processing_time = processing_time
+        self._last_total_frames = frame_idx
 
         # 完了報告
-        total_time = time.time() - start_time
         logger.info(f"🎉 改良版動画処理完了!")
-        logger.info(f"処理時間: {total_time:.1f}秒")
-        logger.info(f"平均処理速度: {frame_idx/total_time:.1f}fps")
+        logger.info(f"処理時間: {processing_time:.1f}秒")
+        logger.info(f"平均処理速度: {frame_idx/processing_time:.1f}fps")
         logger.info(f"最終拡張CSV記録数: {detection_count}行")
 
-    def get_statistics(self) -> Dict:
+        return True
+
+    def get_statistics(self) -> dict:
         """処理統計を取得"""
         active_tracks = self.detector.id_tracker.get_active_tracks()
         return {
