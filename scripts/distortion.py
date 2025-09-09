@@ -10,7 +10,6 @@ from collections import defaultdict, deque
 import logging
 import csv
 from datetime import datetime
-from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
 
@@ -95,7 +94,6 @@ class VideoProcessingHistory:
         else:
             degradation_ratio = previous_time / estimated_processing_time
             return False, f"処理品質劣化防止 (推定時間が{degradation_ratio:.1f}倍高速化→品質低下の可能性)"
-
 
     def add_processing_record(self, video_hash, video_basename, processing_time, total_frames, output_files):
         """処理記録を追加"""
@@ -245,51 +243,6 @@ class SmartFileManager:
         logger.info(f"  平均FPS: {fps_average:.1f}")
         logger.info(f"  総フレーム数: {total_frames}")
 
-class PhoneUsageState(Enum):
-    """スマホ使用状態の詳細分類"""
-    NOT_USING = "not_using"
-    HOLDING_NEAR_FACE = "holding_near_face"
-    LOOKING_DOWN = "looking_down"
-    BOTH_HANDS_UP = "both_hands_up"
-    UNCERTAIN = "uncertain"
-    TRANSITIONING = "transitioning"
-
-class PersonOrientation(Enum):
-    """人物の向きの分類"""
-    FRONT_FACING = "front_facing"
-    BACK_FACING = "back_facing"
-    SIDE_FACING = "side_facing"
-    UNCERTAIN = "uncertain"
-
-@dataclass
-class PostureFeatures:
-    """姿勢特徴量を格納するデータクラス"""
-    head_angle: float
-    hand_face_distance_left: float
-    hand_face_distance_right: float
-    shoulder_hand_angle_left: float
-    shoulder_hand_angle_right: float
-    head_tilt: float
-    neck_forward: float
-    confidence_score: float
-    visible_keypoints: int
-    orientation: PersonOrientation = PersonOrientation.UNCERTAIN
-
-@dataclass
-class DetectionResult:
-    """検出結果の詳細情報"""
-    frame_id: int
-    track_id: int
-    timestamp: float
-    phone_state: PhoneUsageState
-    confidence: float
-    features: PostureFeatures
-    bbox: Tuple[int, int, int, int]
-    grid_position: Tuple[int, int]
-    keypoints_visible: List[bool]
-    orientation: PersonOrientation
-
-
 class EnhancedCSVLogger:
     """機械学習用拡張CSVロガー"""
 
@@ -299,10 +252,8 @@ class EnhancedCSVLogger:
         self.csv_writer = None
         self.start_time = time.time()
         self.log_count = 0
-        # モデルを変更した時はここを更新
         self.model_name = model_name
-        # self.file_manager = SmartFileManager()  # スマートファイル管理を追加
-        self.overwrite_existing = overwrite_existing  # ← この行を追加
+        self.overwrite_existing = overwrite_existing
 
         # CSV ヘッダー定義
         self.headers = [
@@ -363,8 +314,8 @@ class EnhancedCSVLogger:
             logger.error(f"CSV初期化エラー: {e}")
             raise
 
-    def log_detection_result_simplified(self, detection_result: DetectionResult, keypoints, yolo_confidence=0.0):
-        """DetectionResultオブジェクトから拡張CSVにログを記録"""
+    def log_detection_simplified(self, frame_idx, track_id, keypoints, yolo_confidence, bbox):
+        """簡素化された検出結果をログに記録"""
         # CSVライターが無効化されている場合はスキップ
         if self.csv_writer is None:
             return
@@ -376,7 +327,7 @@ class EnhancedCSVLogger:
             relative_time = current_time - self.start_time
 
             # バウンディングボックス情報
-            x1, y1, x2, y2 = detection_result.bbox
+            x1, y1, x2, y2 = map(float, bbox)
 
             # キーポイント座標をフラット化
             kp_coords = []
@@ -392,13 +343,13 @@ class EnhancedCSVLogger:
             # ログデータ準備
             log_data = [
                 # 基本情報
-                timestamp, detection_result.frame_id, relative_time, 33.33,
+                timestamp, frame_idx, relative_time, 33.33,
 
                 # トラッキングID
-                detection_result.track_id,
+                track_id,
 
                 # 検出枠座標
-                float(x1), float(y1), float(x2), float(y2),
+                x1, y1, x2, y2,
 
                 # 検出枠信頼度
                 yolo_confidence,
@@ -406,7 +357,7 @@ class EnhancedCSVLogger:
                 # キーポイント座標と信頼度(51列)
                 *kp_coords,
 
-                # モデル情報 (キーポイント座標の後)
+                # モデル情報
                 self.model_name,
             ]
 
@@ -440,7 +391,7 @@ class EnhancedCSVLogger:
             logger.error(f"ログクローズエラー: {e}")
 
 class VideoDistortionCorrector:
-    """動画の歪み補正クラス（改良版 - yolo_checker.py準拠）"""
+    """動画の歪み補正クラス（改良版）"""
 
     def __init__(self, k1=-0.1, k2=0.0, p1=0.0, p2=0.0, k3=0.0, alpha=0.6, focal_scale=0.9):
         """
@@ -609,27 +560,16 @@ class OrderedIDTracker:
         return {tid: data for tid, data in self.tracked_persons.items()}
 
 class AdvancedPostureDetectionSystem:
-    """高度な姿勢検出システム（yolo_checker.py準拠）"""
+    """高度な姿勢検出システム（簡素化版）"""
 
     def __init__(self, model_path="models/yolo11x-pose.pt"):
         self.model = YOLO(model_path)
         self.id_tracker = OrderedIDTracker(distance_threshold=100, max_missing_frames=30)
-        self.person_states = {}
 
         # 基本設定
         self.config = {
             "conf_threshold": 0.4,
             "phone_distance_threshold": 100,
-            "head_angle_threshold": 30,
-            "neck_forward_threshold": 0.2,
-        }
-
-        # 後ろ向き用の設定
-        self.back_view_config = {
-            "hand_head_distance_threshold": 150,
-            "arm_bend_threshold": 90,
-            "shoulder_tilt_threshold": 15,
-            "forward_lean_threshold": 0.3,
         }
 
         # スケルトン描画用の接続情報
@@ -643,12 +583,8 @@ class AdvancedPostureDetectionSystem:
         self.split_ratios = [0.5, 0.5]
         self.split_ratios_cols = [0.5, 0.5]
 
-        # 追跡用の履歴
-        self.track_history = defaultdict(lambda: deque(maxlen=10))
-        self.frame_count = 0
-
         # FPS計算用
-        self.fps_counter = deque(maxlen=30)  # 過去30フレームの平均FPSを計算
+        self.fps_counter = deque(maxlen=30)
         self.last_frame_time = time.time()
 
     def _draw_skeleton(self, frame: np.ndarray, keypoints: np.ndarray, color: Tuple[int, int, int]) -> None:
@@ -672,302 +608,37 @@ class AdvancedPostureDetectionSystem:
         except Exception as e:
             logger.warning(f"スケルトン描画エラー: {e}")
 
-    def determine_person_orientation(self, keypoints: np.ndarray) -> PersonOrientation:
-        """人物の向きを判定"""
+    def is_using_phone(self, keypoints):
+        """基本的なスマホ使用判定（手と顔の距離ベース）"""
         try:
-            if keypoints.shape[0] < 17:
-                return PersonOrientation.UNCERTAIN
+            if len(keypoints) < 11:
+                return False
 
-            # 顔のキーポイント
+            # キーポイント取得
             nose = keypoints[0][:2]
-            left_eye = keypoints[1][:2]
-            right_eye = keypoints[2][:2]
-            left_ear = keypoints[3][:2]
-            right_ear = keypoints[4][:2]
-
-            # 肩のキーポイント
-            left_shoulder = keypoints[5][:2]
-            right_shoulder = keypoints[6][:2]
-
-            # 可視性をチェック
-            face_points_visible = sum(
-                1 for p in [nose, left_eye, right_eye, left_ear, right_ear]
-                if not np.allclose(p, [0, 0])
-            )
-
-            shoulder_points_visible = sum(
-                1 for p in [left_shoulder, right_shoulder]
-                if not np.allclose(p, [0, 0])
-            )
-
-            # 判定ロジック
-            if face_points_visible >= 3:
-                return PersonOrientation.FRONT_FACING
-            elif shoulder_points_visible >= 2 and face_points_visible <= 1:
-                return PersonOrientation.BACK_FACING
-            elif face_points_visible >= 1 and shoulder_points_visible >= 1:
-                return PersonOrientation.SIDE_FACING
-            else:
-                return PersonOrientation.UNCERTAIN
-
-        except Exception as e:
-            logger.error(f"向き判定エラー: {e}")
-            return PersonOrientation.UNCERTAIN
-
-    def extract_advanced_features(self, keypoints: np.ndarray) -> Optional[PostureFeatures]:
-        """向きを自動判定して適切な特徴量を抽出"""
-        orientation = self.determine_person_orientation(keypoints)
-
-        if orientation == PersonOrientation.FRONT_FACING:
-            return self._extract_features_front_view(keypoints)
-        elif orientation == PersonOrientation.BACK_FACING:
-            return self._extract_features_back_view(keypoints)
-        else:
-            features = self._extract_features_front_view(keypoints)
-            if features:
-                features.orientation = orientation
-            return features
-
-    def _extract_features_front_view(self, keypoints: np.ndarray) -> Optional[PostureFeatures]:
-        """前向き映像用の特徴量抽出"""
-        try:
-            if keypoints.shape[0] < 17:
-                return None
-
-            # キーポイントの定義
-            nose = keypoints[0][:2]
-            left_ear = keypoints[3][:2]
-            right_ear = keypoints[4][:2]
-            left_shoulder = keypoints[5][:2]
-            right_shoulder = keypoints[6][:2]
-            left_elbow = keypoints[7][:2]
-            right_elbow = keypoints[8][:2]
             left_wrist = keypoints[9][:2]
             right_wrist = keypoints[10][:2]
 
-            visible_count = sum(1 for kp in keypoints if kp[0] > 0 and kp[1] > 0)
+            # 有効性チェック
+            if np.allclose(nose, [0, 0]):
+                return False
 
             def safe_distance(p1, p2):
-                if (np.any(np.isnan(p1)) or np.any(np.isnan(p2)) or
-                    np.allclose(p1, [0, 0]) or np.allclose(p2, [0, 0])):
+                if np.allclose(p1, [0, 0]) or np.allclose(p2, [0, 0]):
                     return float("inf")
                 return np.linalg.norm(p1 - p2)
 
-            def calculate_angle(p1, p2, p3):
-                if any(np.allclose(p, [0, 0]) for p in [p1, p2, p3]):
-                    return 0.0
-                v1 = p1 - p2
-                v2 = p3 - p2
-                cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-                cos_angle = np.clip(cos_angle, -1.0, 1.0)
-                return np.degrees(np.arccos(cos_angle))
+            # 手と顔の距離計算
+            left_distance = safe_distance(left_wrist, nose)
+            right_distance = safe_distance(right_wrist, nose)
 
-            features = PostureFeatures(
-                head_angle=calculate_angle(left_ear, nose, right_ear),
-                hand_face_distance_left=safe_distance(left_wrist, nose),
-                hand_face_distance_right=safe_distance(right_wrist, nose),
-                shoulder_hand_angle_left=calculate_angle(left_shoulder, left_elbow, left_wrist),
-                shoulder_hand_angle_right=calculate_angle(right_shoulder, right_elbow, right_wrist),
-                head_tilt=self._calculate_head_tilt(left_ear, right_ear),
-                neck_forward=0.0,  # 前向きでは簡略化
-                confidence_score=np.mean(keypoints[:, 2]) if keypoints.shape[1] > 2 else 0.8,
-                visible_keypoints=visible_count,
-                orientation=PersonOrientation.FRONT_FACING,
-            )
-
-            return features
+            # いずれかの手が顔の近くにある場合
+            threshold = self.config["phone_distance_threshold"]
+            return left_distance < threshold or right_distance < threshold
 
         except Exception as e:
-            logger.error(f"前向き特徴量抽出エラー: {e}")
-            return None
-
-    def _extract_features_back_view(self, keypoints: np.ndarray) -> Optional[PostureFeatures]:
-        """後ろ向き映像用の特徴量抽出"""
-        try:
-            if keypoints.shape[0] < 17:
-                return None
-
-            # 後ろから見える主要なキーポイント
-            left_shoulder = keypoints[5][:2]
-            right_shoulder = keypoints[6][:2]
-            left_elbow = keypoints[7][:2]
-            right_elbow = keypoints[8][:2]
-            left_wrist = keypoints[9][:2]
-            right_wrist = keypoints[10][:2]
-
-            # 頭部の推定位置
-            if not (np.allclose(left_shoulder, [0, 0]) or np.allclose(right_shoulder, [0, 0])):
-                shoulder_center = (left_shoulder + right_shoulder) / 2
-                shoulder_width = np.linalg.norm(left_shoulder - right_shoulder)
-                head_estimated = shoulder_center - np.array([0, shoulder_width * 0.3])
-            else:
-                head_estimated = np.array([0, 0])
-
-            visible_count = sum(1 for kp in keypoints if kp[0] > 0 and kp[1] > 0)
-
-            def safe_distance(p1, p2):
-                if (np.any(np.isnan(p1)) or np.any(np.isnan(p2)) or 
-                    np.allclose(p1, [0, 0]) or np.allclose(p2, [0, 0])):
-                    return float("inf")
-                return np.linalg.norm(p1 - p2)
-
-            def calculate_angle(p1, p2, p3):
-                if any(np.allclose(p, [0, 0]) for p in [p1, p2, p3]):
-                    return 0.0
-                v1 = p1 - p2
-                v2 = p3 - p2
-                cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-                cos_angle = np.clip(cos_angle, -1.0, 1.0)
-                return np.degrees(np.arccos(cos_angle))
-
-            features = PostureFeatures(
-                head_angle=self._calculate_shoulder_levelness(left_shoulder, right_shoulder),
-                hand_face_distance_left=safe_distance(left_wrist, head_estimated),
-                hand_face_distance_right=safe_distance(right_wrist, head_estimated),
-                shoulder_hand_angle_left=calculate_angle(left_shoulder, left_elbow, left_wrist),
-                shoulder_hand_angle_right=calculate_angle(right_shoulder, right_elbow, right_wrist),
-                head_tilt=self._calculate_shoulder_tilt(left_shoulder, right_shoulder),
-                neck_forward=0.0,  # 後ろ向きでは簡略化
-                confidence_score=np.mean(keypoints[:, 2]) if keypoints.shape[1] > 2 else 0.8,
-                visible_keypoints=visible_count,
-                orientation=PersonOrientation.BACK_FACING,
-            )
-
-            return features
-
-        except Exception as e:
-            logger.error(f"後ろ向き特徴量抽出エラー: {e}")
-            return None
-
-    def classify_phone_usage(self, features: PostureFeatures) -> Tuple[PhoneUsageState, float]:
-        """向きに応じてスマホ使用状態を分類"""
-        if features.orientation == PersonOrientation.FRONT_FACING:
-            return self._classify_phone_usage_front_view(features)
-        elif features.orientation == PersonOrientation.BACK_FACING:
-            return self._classify_phone_usage_back_view(features)
-        else:
-            return self._classify_phone_usage_front_view(features)
-
-    def _classify_phone_usage_front_view(self, features: PostureFeatures) -> Tuple[PhoneUsageState, float]:
-        """前向き映像用のスマホ使用状態分類"""
-        confidence = features.confidence_score
-
-        # 両手が顔の近くにある場合
-        if (features.hand_face_distance_left < self.config["phone_distance_threshold"] and
-            features.hand_face_distance_right < self.config["phone_distance_threshold"]):
-            return PhoneUsageState.BOTH_HANDS_UP, confidence * 0.9
-
-        # 片手が顔の近くにある場合
-        elif (features.hand_face_distance_left < self.config["phone_distance_threshold"] or
-            features.hand_face_distance_right < self.config["phone_distance_threshold"]):
-            if features.head_tilt > self.config["head_angle_threshold"]:
-                return PhoneUsageState.LOOKING_DOWN, confidence * 0.8
-            else:
-                return PhoneUsageState.HOLDING_NEAR_FACE, confidence * 0.85
-
-        # 判定困難な場合
-        elif features.visible_keypoints < 10:
-            return PhoneUsageState.UNCERTAIN, confidence * 0.5
-        else:
-            return PhoneUsageState.NOT_USING, confidence * 0.9
-
-    def _classify_phone_usage_back_view(self, features: PostureFeatures) -> Tuple[PhoneUsageState, float]:
-        """後ろ向き映像用のスマホ使用状態分類"""
-        confidence = features.confidence_score
-
-        # 両手が頭部付近にある場合
-        if (features.hand_face_distance_left < self.back_view_config["hand_head_distance_threshold"] and
-            features.hand_face_distance_right < self.back_view_config["hand_head_distance_threshold"]):
-            return PhoneUsageState.BOTH_HANDS_UP, confidence * 0.8
-
-        # 片手が頭部付近にある場合
-        elif (features.hand_face_distance_left < self.back_view_config["hand_head_distance_threshold"] or
-            features.hand_face_distance_right < self.back_view_config["hand_head_distance_threshold"]):
-            if (features.shoulder_hand_angle_left < self.back_view_config["arm_bend_threshold"] or
-                features.shoulder_hand_angle_right < self.back_view_config["arm_bend_threshold"]):
-                return PhoneUsageState.HOLDING_NEAR_FACE, confidence * 0.7
-            else:
-                return PhoneUsageState.UNCERTAIN, confidence * 0.5
-
-        # 判定困難な場合
-        elif features.visible_keypoints < 8:
-            return PhoneUsageState.UNCERTAIN, confidence * 0.4
-        else:
-            return PhoneUsageState.NOT_USING, confidence * 0.8
-
-    def _calculate_head_tilt(self, left_ear: np.ndarray, right_ear: np.ndarray) -> float:
-        """頭部の傾きを計算"""
-        if np.allclose(left_ear, [0, 0]) or np.allclose(right_ear, [0, 0]):
-            return 0.0
-
-        height_diff = abs(left_ear[1] - right_ear[1])
-        width_diff = abs(left_ear[0] - right_ear[0])
-
-        if width_diff == 0:
-            return 0.0
-
-        return np.degrees(np.arctan(height_diff / width_diff))
-
-    def _calculate_shoulder_levelness(self, left_shoulder: np.ndarray, right_shoulder: np.ndarray) -> float:
-        """肩の水平度を計算"""
-        if np.allclose(left_shoulder, [0, 0]) or np.allclose(right_shoulder, [0, 0]):
-            return 0.0
-
-        shoulder_vector = right_shoulder - left_shoulder
-        horizontal_vector = np.array([1, 0])
-
-        cos_angle = np.dot(shoulder_vector, horizontal_vector) / np.linalg.norm(shoulder_vector)
-        cos_angle = np.clip(cos_angle, -1.0, 1.0)
-        return np.degrees(np.arccos(abs(cos_angle)))
-
-    def _calculate_shoulder_tilt(self, left_shoulder: np.ndarray, right_shoulder: np.ndarray) -> float:
-        """肩の傾きを計算"""
-        if np.allclose(left_shoulder, [0, 0]) or np.allclose(right_shoulder, [0, 0]):
-            return 0.0
-
-        height_diff = abs(left_shoulder[1] - right_shoulder[1])
-        width_diff = abs(left_shoulder[0] - right_shoulder[0])
-
-        if width_diff == 0:
-            return 0.0
-
-        return np.degrees(np.arctan(height_diff / width_diff))
-
-    def smooth_detection(self, track_id, phone_state):
-        """検出結果を平滑化（track_idベース）"""
-        if track_id not in self.person_states:
-            self.person_states[track_id] = {
-                "phone_history": deque(maxlen=5),
-                "last_seen": 0,
-            }
-
-        state = self.person_states[track_id]
-        state["phone_history"].append(phone_state)
-
-        # 過半数の判定で決定
-        if len(state["phone_history"]) == 0:
-            return PhoneUsageState.NOT_USING
-
-        # 最も多い状態を採用
-        state_counts = defaultdict(int)
-        for s in state["phone_history"]:
-            state_counts[s] += 1
-
-        return max(state_counts, key=state_counts.get)
-
-    def draw_monitor_grid(self, img, col_ratios, row_ratios):
-        """監視グリッドを描画"""
-        h, w = img.shape[:2]
-        # 縦線
-        x_current = 0
-        for ratio in col_ratios[:-1]:
-            x_current += int(w * ratio)
-            cv2.line(img, (x_current, 0), (x_current, h), (255, 255, 255), 2)
-        # 横線
-        y_current = 0
-        for ratio in row_ratios[:-1]:
-            y_current += int(h * ratio)
-            cv2.line(img, (0, y_current), (w, y_current), (255, 255, 255), 2)
+            logger.debug(f"スマホ使用判定エラー: {e}")
+            return False
 
     def get_grid_position(self, bbox: Tuple[int, int, int, int], frame_width: int, frame_height: int) -> Tuple[int, int]:
         """人物の位置をグリッド座標で取得"""
@@ -980,9 +651,16 @@ class AdvancedPostureDetectionSystem:
 
         return (grid_y, grid_x)
 
+    def count_visible_keypoints(self, keypoints):
+        """可視キーポイント数をカウント"""
+        return int(np.sum(keypoints[:, 0] > 0))
+
+    def calculate_overall_confidence(self, yolo_conf, keypoint_conf):
+        """総合信頼度を計算"""
+        return yolo_conf * keypoint_conf
+
     def process_frame(self, frame, frame_idx, csv_writer, enhanced_csv_logger=None):
-        """フレームを処理して検出結果を返す（改良版）"""
-        self.frame_count = frame_idx
+        """フレームを処理して検出結果を返す（簡素化版）"""
         height, width = frame.shape[:2]
 
         # YOLO検出実行
@@ -992,11 +670,7 @@ class AdvancedPostureDetectionSystem:
             logger.error(f"YOLO検出エラー: {e}")
             return frame
 
-        # グリッド境界計算
-        x_grid = [0, int(width * self.split_ratios_cols[0]), width]
-        y_grid = [0, int(height * self.split_ratios[0]), height]
-
-            # 検出結果を整理
+        # 検出結果を整理
         detections = []
         for result in results:
             if result.keypoints is None or result.boxes is None:
@@ -1017,10 +691,8 @@ class AdvancedPostureDetectionSystem:
 
                     # キーポイント信頼度を統合
                     if kps_conf is not None and i < len(kps_conf):
-                        # YOLOのキーポイント信頼度を使用
                         kps_with_conf = np.column_stack([kps, kps_conf[i]])
                     else:
-                        # 信頼度が取得できない場合はYOLO検出信頼度をベースにする
                         default_conf = np.ones(kps.shape[0]) * float(conf) * 0.8
                         kps_with_conf = np.column_stack([kps, default_conf])
 
@@ -1046,88 +718,54 @@ class AdvancedPostureDetectionSystem:
         # 順序付きIDトラッカーで追跡更新
         tracked_detections = self.id_tracker.update_tracks(detections)
 
-
         # 検出結果の処理
-        detection_results = []
         for detection in tracked_detections:
             track_id = detection['track_id']
             kps = detection['keypoints']
             box = detection['bbox']
-            cx, cy = detection['center']
             yolo_confidence = detection['yolo_confidence']
             keypoint_confidences = detection.get('keypoint_confidences', None)
 
-            # 高度な特徴量抽出
-            features = self.extract_advanced_features(kps)
-            if features is None:
-                continue
-
-            # スマホ使用状態分類
-            phone_state_raw, state_confidence = self.classify_phone_usage(features)
-            phone_state = self.smooth_detection(track_id, phone_state_raw)
+            # 基本的なスマホ使用判定
+            using_phone = self.is_using_phone(kps)
 
             # キーポイント信頼度の統計計算
             if keypoint_confidences is not None:
                 avg_keypoint_conf = float(np.mean(keypoint_confidences[keypoint_confidences > 0]))
-                min_keypoint_conf = float(np.min(keypoint_confidences[keypoint_confidences > 0]))
-                max_keypoint_conf = float(np.max(keypoint_confidences))
                 visible_keypoints = int(np.sum(keypoint_confidences > 0))
             else:
                 avg_keypoint_conf = yolo_confidence * 0.8
-                min_keypoint_conf = yolo_confidence * 0.6
-                max_keypoint_conf = yolo_confidence
-                visible_keypoints = int(np.sum(kps[:, 0] > 0))
+                visible_keypoints = self.count_visible_keypoints(kps)
 
-            # 総合信頼度（YOLO信頼度 × 平均キーポイント信頼度）
-            overall_confidence = yolo_confidence * avg_keypoint_conf
+            # 総合信頼度
+            overall_confidence = self.calculate_overall_confidence(yolo_confidence, avg_keypoint_conf)
 
             # グリッド位置
             bbox_tuple = tuple(map(int, box))
             grid_pos = self.get_grid_position(bbox_tuple, width, height)
             row, col = grid_pos
 
-            # DetectionResultオブジェクト作成
-            detection_result = DetectionResult(
-                frame_id=frame_idx,
-                track_id=track_id,
-                timestamp=time.time(),
-                phone_state=phone_state,
-                confidence=overall_confidence,
-                features=features,
-                bbox=bbox_tuple,
-                grid_position=grid_pos,
-                keypoints_visible=[kpt[0] > 0 and kpt[1] > 0 for kpt in kps],
-                orientation=features.orientation
-            )
-
-            detection_results.append(detection_result)
-
-            # 基本CSVに結果を記録（キーポイント信頼度情報を追加）
+            # 基本CSVに結果を記録
             if csv_writer:
-                using_phone = phone_state not in [PhoneUsageState.NOT_USING, PhoneUsageState.UNCERTAIN]
                 csv_writer.writerow([
                     frame_idx, track_id, using_phone, row, col,
-                    f"{yolo_confidence:.3f}",  # YOLO検出信頼度
-                    f"{avg_keypoint_conf:.3f}",  # 平均キーポイント信頼度
-                    f"{overall_confidence:.3f}",  # 総合信頼度
-                    visible_keypoints  # 可視キーポイント数
+                    f"{yolo_confidence:.3f}",
+                    f"{avg_keypoint_conf:.3f}",
+                    f"{overall_confidence:.3f}",
+                    visible_keypoints
                 ])
 
-            # 拡張CSVに結果を記録（キーポイント信頼度を詳細に記録）
+            # 拡張CSVに結果を記録
             if enhanced_csv_logger is not None:
                 try:
-                    enhanced_csv_logger.log_detection_result_simplified(
-                        detection_result, kps, yolo_confidence
-                )
+                    enhanced_csv_logger.log_detection_simplified(
+                        frame_idx, track_id, kps, yolo_confidence, box
+                    )
                 except Exception as csv_error:
-                    logger.error(f"簡略化CSV記録エラー: {csv_error}")
+                    logger.error(f"拡張CSV記録エラー: {csv_error}")
 
-
-
-            # 描画処理（状態を表示せず、信頼度のみ表示）
-            self._draw_detection_on_frame_with_confidence(frame, detection_result, kps,
-                                                    yolo_confidence, avg_keypoint_conf, overall_confidence)
-
+            # 描画処理
+            self._draw_detection_on_frame(frame, track_id, kps, box, yolo_confidence)
 
         # デバッグ情報の表示
         active_tracks = self.id_tracker.get_active_tracks()
@@ -1181,27 +819,22 @@ class AdvancedPostureDetectionSystem:
         cv2.putText(frame, fps_text, (bg_x1 + 10, bg_y1 + text_height + 5),
                 font, font_scale, (0, 255, 0), thickness)
 
-    def _draw_detection_on_frame_with_confidence(self, frame, detection_result: DetectionResult, keypoints, yolo_conf, keypoint_conf, overall_conf):
-        """フレームに検出結果を描画"""
-        x1, y1, x2, y2 = detection_result.bbox
-
-        color = (0, 255, 0)  # 全て緑色に統一
+    def _draw_detection_on_frame(self, frame, track_id, keypoints, bbox, yolo_conf):
+        """フレームに検出結果を描画（簡素化版）"""
+        x1, y1, x2, y2 = map(int, bbox)
+        color = (0, 255, 0)  # 緑色
 
         # バウンディングボックス描画
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
 
-        # ラベル作成（IDと信頼度のみ）
-        label = f"ID:{detection_result.track_id}"
-
         # ラベル描画
+        label = f"ID:{track_id}"
         cv2.putText(frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-        # キーポイント描画（全て緑色に統一）
+        # キーポイント描画
         for i, pt in enumerate(keypoints.astype(int)):
             if len(pt) >= 3 and pt[0] > 0 and pt[1] > 0:
-                kp_color = (0, 255, 0)  # 緑色固定
-                radius = 3  # 固定サイズ
-                cv2.circle(frame, tuple(pt[:2]), radius, kp_color, -1)
+                cv2.circle(frame, tuple(pt[:2]), 3, (0, 255, 0), -1)
 
         # スケルトン描画
         self._draw_skeleton(frame, keypoints, color)
@@ -1268,11 +901,7 @@ class IntegratedVideoProcessor:
                 mod_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(file_info["mtime"]))
 
                 # CSVファイルの保護状況を明示
-                if "csv" in key.lower():
-                    protection_status = "🔒 保護中"
-                else:
-                    protection_status = "🔒 保護中"
-
+                protection_status = "🔒 保護中"
                 logger.info(f"{key}: {os.path.basename(file_info['path'])} ({size_mb:.1f}MB, 更新: {mod_time_str}) {protection_status}")
 
             # ユーザーに確認
