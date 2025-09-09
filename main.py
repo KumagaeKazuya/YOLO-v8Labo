@@ -1,20 +1,18 @@
-# main.py
-
 import os
 import glob
-from scripts.distortion import IntegratedVideoProcessor
-# from scripts.downloader import download_file_from_google_drive
-import logging
+import time
 import json
+from scripts.distortion import IntegratedVideoProcessor
+import logging
 
 # ===== 設定セクション（ここで全てを調整可能） =====
 DISTORTION_CONFIG = {
     # 歪み補正パラメータ（yolo_checker.py準拠の高精度補正）
     "k1": -0.20,        # 120°広角レンズ用の強めの逆バレル補正
-    "k2": -0.001,         # 広角レンズの二次歪みを補正
+    "k2": -0.001,       # 広角レンズの二次歪みを補正
     "p1": 0.0,          # 接線歪み係数1
     "p2": 0.0,          # 接線歪み係数2
-    "k3": 0.012,         # 第3歪み係数
+    "k3": 0.012,        # 第3歪み係数
     "alpha": 0.8,       # 広角なので切り抜き重視
     "focal_scale": 0.85, # 広角効果を少し抑える
     "apply_correction": True,
@@ -34,6 +32,15 @@ MODEL_CONFIG = {
     "model_path": "models/yolo11x-pose.pt",
     "conf_threshold": 0.4,      # 検出信頼度閾値
     "phone_distance_threshold": 100, # スマホ使用判定距離
+}
+
+# スマートファイル管理設定
+SMART_FILE_MANAGEMENT_CONFIG = {
+    "enabled": True,                 # スマートファイル管理の有効/無効
+    "force_process": False,          # 強制処理フラグ
+    "quality_threshold": 1.0,        # 品質劣化防止閾値（1.0 = 同等時間以上で処理）
+    "backup_existing": False,        # 既存ファイルのバックアップ
+    "detailed_logging": True,        # 詳細ログ出力
 }
 # ===================================================
 
@@ -57,11 +64,36 @@ def find_video_files(video_dir="videos"):
     video_files.sort()
     return video_files
 
+def estimate_processing_time(video_path):
+    """動画の処理時間を推定"""
+    try:
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return 0
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+
+        # 基本推定式（実際の環境に応じて調整してください）
+        base_time_per_frame = 0.1  # 1フレームあたりの基本処理時間
+        resolution_factor = (width * height) / (1920 * 1080)  # 解像度係数
+
+        estimated_time = total_frames * base_time_per_frame * resolution_factor
+        return estimated_time
+
+    except Exception as e:
+        logger.warning(f"処理時間推定エラー: {e}")
+        return 0
+
 def select_video_file():
     """動画ファイルを手動選択"""
     video_dir = "videos"
 
-    # videosディレクトリが存在しない場合は作成(gitから持ってくる場合に使う)
+    # videosディレクトリが存在しない場合は作成
     if not os.path.exists(video_dir):
         os.makedirs(video_dir)
         logger.info(f"videosディレクトリを作成: {video_dir}")
@@ -88,7 +120,11 @@ def select_video_file():
         else:
             size_str = f"{file_size} bytes"
 
-        logger.info(f"  {i}. {file_name} ({size_str})")
+        # 推定処理時間も表示
+        estimated_time = estimate_processing_time(video_file)
+        time_str = f"約{estimated_time:.1f}秒" if estimated_time > 0 else "不明"
+
+        logger.info(f"  {i}. {file_name} ({size_str}, 推定処理時間: {time_str})")
 
     # ユーザーのファイル選択
     while True:
@@ -114,9 +150,197 @@ def select_video_file():
         except Exception as e:
             logger.error(f"選択エラー: {e}")
 
+def process_with_smart_management(processor, video_path):
+    """スマートファイル管理による動画処理（品質劣化防止機能強化）"""
+    logger.info("=== スマートファイル管理による処理開始 ===")
+    logger.info("主な機能:")
+    logger.info("  ✓ 動画別ファイル管理（ハッシュベース）")
+    logger.info("  ✓ 推論時間による自動上書き制御")
+    logger.info("  ✓ 処理履歴の永続化")
+    logger.info("  ✓ 重複処理の自動検出・防止")
+    logger.info("  ✓ 品質劣化防止機能（推定時間短縮時の保護）")
+    logger.info(f"  ✓ 品質閾値: {SMART_FILE_MANAGEMENT_CONFIG['quality_threshold']:.1f}倍")
+
+    # スマートファイル管理のインスタンスに品質閾値を設定
+    processor.file_manager.quality_threshold = SMART_FILE_MANAGEMENT_CONFIG["quality_threshold"]
+
+    # スマートファイル管理による動画処理実行
+    success = processor.process_video_with_smart_management(
+        input_path=video_path,
+        show_preview=VIDEO_CONFIG["show_preview"],
+        apply_correction=DISTORTION_CONFIG["apply_correction"],
+        force_process=SMART_FILE_MANAGEMENT_CONFIG["force_process"]
+    )
+
+    # 生成されたファイルパスを取得（スマートファイル管理から）
+    file_paths = {}
+    if hasattr(processor, 'file_manager'):
+        try:
+            estimated_time = processor.estimate_processing_time(video_path)
+            _, _, file_paths = processor.file_manager.should_process_video(
+                video_path, estimated_time, False
+            )
+        except Exception as e:
+            logger.warning(f"ファイルパス取得エラー: {e}")
+
+    return success, file_paths
+
+def process_with_smart_management(processor, video_path):
+    """スマートファイル管理による動画処理（品質劣化防止機能強化）"""
+    logger.info("=== スマートファイル管理による処理開始 ===")
+    logger.info("主な機能:")
+    logger.info("  ✓ 動画別ファイル管理（ハッシュベース）")
+    logger.info("  ✓ 推論時間による自動上書き制御")
+    logger.info("  ✓ 処理履歴の永続化")
+    logger.info("  ✓ 重複処理の自動検出・防止")
+    logger.info("  ✓ 品質劣化防止機能（推定時間短縮時の保護）")
+    logger.info(f"  ✓ 品質閾値: {SMART_FILE_MANAGEMENT_CONFIG['quality_threshold']:.1f}倍")
+    logger.info(f"  ✓ CSV保護: 動画・基本CSV・拡張CSV全て同時保護")
+
+    # スマートファイル管理のインスタンスに品質閾値を設定
+    processor.file_manager.quality_threshold = SMART_FILE_MANAGEMENT_CONFIG["quality_threshold"]
+
+    # スマートファイル管理による動画処理実行
+    success = processor.process_video_with_smart_management(
+        input_path=video_path,
+        show_preview=VIDEO_CONFIG["show_preview"],
+        apply_correction=DISTORTION_CONFIG["apply_correction"],
+        force_process=SMART_FILE_MANAGEMENT_CONFIG["force_process"]
+    )
+
+    # 生成されたファイルパスを取得（スマートファイル管理から）
+    file_paths = {}
+    if hasattr(processor, 'file_manager'):
+        try:
+            estimated_time = processor.estimate_processing_time(video_path)
+            _, _, file_paths = processor.file_manager.should_process_video(
+                video_path, estimated_time, False
+            )
+        except Exception as e:
+            logger.warning(f"ファイルパス取得エラー: {e}")
+
+    return success, file_paths
+
+# process_with_traditional_method 関数を追加
+def process_with_traditional_method(processor, video_path):
+    """従来方式での動画処理"""
+    logger.info("=== 従来方式による処理開始 ===")
+
+    # 出力ファイル名生成（従来方式）
+    video_basename = os.path.splitext(os.path.basename(video_path))[0]
+    output_dir = "videos"
+    data_dir = "data"
+
+    output_video = os.path.join(output_dir, f"output_{video_basename}_advanced_posture_detection.mp4")
+    result_log = os.path.join(data_dir, f"frame_results_{video_basename}.csv")
+    enhanced_csv_path = os.path.join(data_dir, f"enhanced_detection_log_{video_basename}.csv")
+
+    # 既存ファイルの削除（従来方式）
+    for file_path in [output_video, result_log, enhanced_csv_path]:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.info(f"既存ファイルを削除: {os.path.basename(file_path)}")
+
+    # 拡張CSVロガーを設定
+    if VIDEO_CONFIG["enable_enhanced_csv"]:
+        processor.set_csv_logger(enhanced_csv_path, overwrite_existing=True)
+
+    # 動画処理実行
+    success = processor.process_video(
+        input_path=video_path,
+        output_path=output_video,
+        result_log=result_log,
+        show_preview=VIDEO_CONFIG["show_preview"],
+        apply_correction=DISTORTION_CONFIG["apply_correction"]
+    )
+
+    return success, {
+        "output_video": output_video,
+        "result_log": result_log,
+        "enhanced_csv": enhanced_csv_path
+    }
+
+def display_processing_results(success, file_paths, total_processing_time, processor):
+    """処理結果の表示"""
+    if success:
+        logger.info("=== 処理完了 ===")
+        logger.info(f"総処理時間: {total_processing_time:.1f}秒")
+
+        # ファイル情報の表示
+        logger.info("=== 生成ファイル情報 ===")
+        for key, path in file_paths.items():
+            if key not in ["video_hash", "video_basename"] and os.path.exists(path):
+                file_size = os.path.getsize(path)
+                size_mb = file_size / (1024 * 1024)
+                logger.info(f"{key}: {os.path.basename(path)} ({size_mb:.1f}MB)")
+
+        # 統計情報を取得
+        try:
+            stats = processor.get_statistics()
+            logger.info("=== 最終統計情報 ===")
+            logger.info(f"アクティブトラック数: {stats['active_tracks']}")
+            logger.info(f"総CSV記録数: {stats['total_csv_records']}")
+            logger.info(f"追跡ID一覧: {stats['track_ids']}")
+        except Exception as e:
+            logger.warning(f"統計情報取得エラー: {e}")
+
+        # 処理履歴の確認（スマートファイル管理の場合）
+        if SMART_FILE_MANAGEMENT_CONFIG["enabled"]:
+            try:
+                history_file = "data/video_processing_history.json"
+                if os.path.exists(history_file):
+                    with open(history_file, 'r', encoding='utf-8') as f:
+                        history = json.load(f)
+
+                    logger.info("=== 処理履歴サマリー ===")
+                    logger.info(f"記録済み動画数: {len(history)}動画")
+
+                    for video_hash, record in history.items():
+                        logger.info(f"  {record['video_basename']}: {record['execution_count']}回実行, "
+                                f"平均{record['fps_average']:.1f}fps")
+
+            except Exception as e:
+                logger.warning(f"処理履歴確認エラー: {e}")
+
+        logger.info("✅ 処理が正常に完了しました")
+
+        if SMART_FILE_MANAGEMENT_CONFIG["enabled"]:
+            logger.info("主な改善点の確認:")
+            logger.info("  ✓ 動画別の完全分離ファイル管理")
+            logger.info("  ✓ 推論時間による品質保護")
+            logger.info("  ✓ 自動重複防止システム")
+            logger.info("  ✓ 処理履歴の永続化")
+
+    else:
+        logger.warning("⚠️ 処理が完了しませんでした（スキップまたはエラー）")
+
+def save_processing_config(video_path, total_processing_time, smart_management_used):
+    """処理設定の保存"""
+    data_dir = "data"
+    config_file = os.path.join(data_dir, "processing_config.json")
+
+    config_data = {
+        "distortion_config": DISTORTION_CONFIG,
+        "video_config": VIDEO_CONFIG,
+        "model_config": MODEL_CONFIG,
+        "smart_file_management_config": SMART_FILE_MANAGEMENT_CONFIG,
+        "processing_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "input_video": video_path,
+        "total_processing_time": total_processing_time,
+        "smart_file_management_used": smart_management_used
+    }
+
+    try:
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config_data, f, indent=2, ensure_ascii=False)
+        logger.info(f"設定ファイル保存: {config_file}")
+    except Exception as e:
+        logger.warning(f"設定ファイル保存エラー: {e}")
+
+
 def main():
-    """メイン関数（改良版）"""
-    logger.info("=== 改良版姿勢検出システム開始 ===")
+    """メイン関数（スマートファイル管理対応版）"""
+    logger.info("=== 改良版姿勢検出システム（スマートファイル管理版）開始 ===")
 
     # 設定情報の表示
     logger.info("設定情報:")
@@ -125,6 +349,7 @@ def main():
     logger.info(f"  alpha={DISTORTION_CONFIG['alpha']}, focal_scale={DISTORTION_CONFIG['focal_scale']}")
     logger.info(f"  プレビュー: {'有効' if VIDEO_CONFIG['show_preview'] else '無効'}")
     logger.info(f"  拡張CSV: {'有効' if VIDEO_CONFIG['enable_enhanced_csv'] else '無効'}")
+    logger.info(f"  スマートファイル管理: {'有効' if SMART_FILE_MANAGEMENT_CONFIG['enabled'] else '無効'}")
 
     # 動画ファイル選択
     logger.info("=== 動画ファイル選択 ===")
@@ -144,8 +369,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(data_dir, exist_ok=True)
 
-    # 統合処理システムを初期化（改良版）
-    logger.info("改良版統合処理システムを初期化中...")
+    # 統合処理システムを初期化（スマートファイル管理対応）
+    logger.info("スマートファイル管理対応統合処理システムを初期化中...")
     processor = IntegratedVideoProcessor(
         k1=DISTORTION_CONFIG["k1"],
         k2=DISTORTION_CONFIG["k2"],
@@ -157,159 +382,32 @@ def main():
         model_path=MODEL_CONFIG["model_path"]
     )
 
-    # 動画ファイル名を基にCSVファイル名を生成
-    video_basename = os.path.splitext(os.path.basename(video_path))[0]
-    enhanced_csv_path = None
-
-    # 拡張CSVロガーを有効化
-    if VIDEO_CONFIG["enable_enhanced_csv"]:
-        enhanced_csv_path = os.path.join(data_dir, f"enhanced_detection_log_{video_basename}.csv")
-
-        # 既存ファイル削除（クリーンスタート）
-        if os.path.exists(enhanced_csv_path):
-            os.remove(enhanced_csv_path)
-            logger.info(f"既存の拡張CSVファイルを削除: {enhanced_csv_path}")
-
-        # 拡張CSVロガーを設定
-        processor.set_csv_logger(enhanced_csv_path)
-
-        if processor.csv_logger is not None:
-            logger.info(f"拡張CSVロガー有効化成功: {enhanced_csv_path}")
-            logger.info(f"ヘッダー列数: {len(processor.csv_logger.headers)}")
-        else:
-            logger.error("拡張CSVロガー有効化失敗")
-            return
-
-    # 出力パスの設定(動画ファイルをもとに生成)
-    output_video = os.path.join(output_dir, f"output_{video_basename}_advanced_posture_detection.mp4")
-    result_log = os.path.join(data_dir, f"frame_results_{video_basename}.csv")
-
-    # 既存ファイル削除（クリーンスタート）
-    for file_path in [output_video, result_log]:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            logger.info(f"既存ファイルを削除: {file_path}")
-
-    logger.info("=== 改良版処理開始 ===")
-    logger.info(f"入力動画: {video_path}")
-    logger.info(f"出力動画: {output_video}")
-    logger.info(f"基本結果ログ: {result_log}")
-    if enhanced_csv_path:
-        logger.info(f"拡張結果ログ: {enhanced_csv_path}")
-    logger.info("改良内容:")
-    logger.info("  - 詳細な状態分類（PhoneUsageState）")
-    logger.info("  - 前向き・後ろ向きの自動判定")
-    logger.info("  - 高度な特徴量抽出システム")
-    logger.info("  - 5係数を使用した高精度歪み補正")
-    logger.info("  - 向き別の最適化されたスマホ検出")
+    logger.info("=== スマートファイル管理による処理開始 ===")
+    logger.info("主な機能:")
+    logger.info("  ✓ 動画別ファイル管理（ハッシュベース）")
+    logger.info("  ✓ 推論時間による自動上書き制御")
+    logger.info("  ✓ 処理履歴の永続化")
+    logger.info("  ✓ 重複処理の自動検出・防止")
+    logger.info("  ✓ 品質劣化防止機能")
 
     try:
-        # 動画処理実行
-        processor.process_video(
-            input_path=video_path,
-            output_path=output_video,
-            result_log=result_log,
-            show_preview=VIDEO_CONFIG["show_preview"],
-            apply_correction=DISTORTION_CONFIG["apply_correction"]
-        )
+        # 処理開始時間記録
+        processing_start_time = time.time()
 
-        logger.info("=== 改良版処理完了 ===")
-
-        # 結果ファイルの確認と統計
-        files_to_check = [
-            (output_video, "出力動画"),
-            (result_log, "基本CSV"),
-        ]
-
-        if enhanced_csv_path:
-            files_to_check.append((enhanced_csv_path, "拡張CSV"))
-
-        for file_path, description in files_to_check:
-            if os.path.exists(file_path):
-                file_size = os.path.getsize(file_path)
-                # ファイルサイズを見やすい単位で表示
-                if file_size > 1024 * 1024:
-                    size_str = f"{file_size / (1024 * 1024):.1f} MB"
-                elif file_size > 1024:
-                    size_str = f"{file_size / 1024:.1f} KB"
-                else:
-                    size_str = f"{file_size} bytes"
-
-                logger.info(f"{description}: {file_path} ({size_str})")
-
-                # CSVファイルの行数チェック
-                if file_path.endswith('.csv'):
-                    try:
-                        with open(file_path, 'r') as f:
-                            line_count = sum(1 for _ in f) - 1  # ヘッダーを除く
-                        logger.info(f"データ行数: {line_count}")
-
-                        if line_count == 0:
-                            logger.warning(f"{description}にデータが記録されていません")
-                        else:
-                            logger.info(f"{description}に{line_count}行のデータが記録されました")
-
-                    except Exception as e:
-                        logger.error(f"{description}の行数確認エラー: {e}")
-            else:
-                logger.error(f"{description}ファイルが生成されていません: {file_path}")
-
-        # 統計情報取得
-        try:
-            stats = processor.get_statistics()
-            logger.info("=== 最終統計情報 ===")
-            logger.info(f"アクティブトラック数: {stats['active_tracks']}")
-            logger.info(f"総CSV記録数: {stats['total_csv_records']}")
-            logger.info(f"追跡ID一覧: {stats['track_ids']}")
-        except Exception as e:
-            logger.warning(f"統計情報取得エラー: {e}")
-
-        # 改良版の成果判定
-        success_criteria = [
-            (os.path.exists(output_video), "動画出力"),
-            (os.path.exists(result_log), "基本CSV出力"),
-        ]
-
-        if enhanced_csv_path:
-            success_criteria.append((
-                os.path.exists(enhanced_csv_path) and os.path.getsize(enhanced_csv_path) > 1000,
-                "拡張CSV出力"
-            ))
-
-        all_success = all(criteria for criteria, _ in success_criteria)
-
-        if all_success:
-            logger.info("✅ 改良版処理が正常に完了しました")
-            logger.info("主な改善点の確認:")
-            logger.info("  ✓ 詳細な姿勢状態分類システム")
-            logger.info("  ✓ 向き判定による最適化")
-            logger.info("  ✓ 高精度歪み補正")
-            logger.info("  ✓ 拡張データロギング")
+        # 処理方式の選択と実行
+        if SMART_FILE_MANAGEMENT_CONFIG["enabled"]:
+            success, file_paths = process_with_smart_management(processor, video_path)
         else:
-            logger.warning("⚠️ 一部の処理で問題が発生しました")
-            for success, name in success_criteria:
-                status = "✓" if success else "✗"
-                logger.info(f"    {status} {name}")
+            success, file_paths = process_with_traditional_method(processor, video_path)
+
+        # 処理時間計算
+        total_processing_time = time.time() - processing_start_time
+
+        # 処理結果の表示
+        display_processing_results(success, file_paths, total_processing_time, processor)
 
         # 設定情報の保存（デバッグ・再現用）
-        config_file = os.path.join(data_dir, "processing_config.json")
-        config_data = {
-            "distortion_config": DISTORTION_CONFIG,
-            "video_config": VIDEO_CONFIG,
-            "model_config": MODEL_CONFIG,
-            "processing_timestamp": str(logger.handlers[0].formatter.formatTime(logger.handlers[0], logging.LogRecord("", 0, "", 0, "", (), None))),
-            "input_video": video_path,
-            "output_video": output_video,
-            "result_log": result_log,
-            "enhanced_csv": enhanced_csv_path
-        }
-
-        try:
-            with open(config_file, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, indent=2, ensure_ascii=False)
-            logger.info(f"設定ファイル保存: {config_file}")
-        except Exception as e:
-            logger.warning(f"設定ファイル保存エラー: {e}")
+        save_processing_config(video_path, total_processing_time, SMART_FILE_MANAGEMENT_CONFIG["enabled"])
 
     except KeyboardInterrupt:
         logger.info("⏹️ ユーザーによって処理が中断されました")
@@ -320,7 +418,7 @@ def main():
     finally:
         # クリーンアップ
         try:
-            if processor.csv_logger:
+            if hasattr(processor, 'csv_logger') and processor.csv_logger:
                 processor.csv_logger.close()
         except:
             pass
@@ -364,6 +462,19 @@ def validate_environment():
         logger.warning(f"YOLOモデルが見つかりません: {model_path}")
         logger.info("モデルは初回実行時に自動ダウンロードされます")
 
+    # 処理履歴ファイルの確認（スマートファイル管理有効時のみ）
+    if SMART_FILE_MANAGEMENT_CONFIG["enabled"]:
+        history_file = "data/video_processing_history.json"
+        if os.path.exists(history_file):
+            try:
+                with open(history_file, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+                logger.info(f"処理履歴ファイル確認: {len(history)}件の記録")
+            except Exception as e:
+                logger.warning(f"処理履歴ファイル読み込みエラー: {e}")
+        else:
+            logger.info("処理履歴ファイルは初回実行時に作成されます")
+
 def show_system_info():
     """システム情報の表示"""
     logger.info("=== システム情報 ===")
@@ -387,38 +498,83 @@ def show_system_info():
     except:
         logger.warning("Ultralytics YOLOが利用できません")
 
+    try:
+        import hashlib
+        import json
+        logger.info("スマートファイル管理: 利用可能")
+    except:
+        logger.warning("スマートファイル管理が利用できません")
+
 def print_usage_help():
     """使用方法のヘルプ"""
-    print("""
-=== 改良版姿勢検出システム 使用方法 ===
+    print(f"""
+=== 改良版姿勢検出システム（統合版） 使用方法 ===
 
 【基本実行】
 python main.py
 
+【処理方式の選択】
+スマートファイル管理: {'有効' if SMART_FILE_MANAGEMENT_CONFIG['enabled'] else '無効'}
+
+【スマートファイル管理の特徴】（有効時）
+✓ 動画別ファイル管理：異なる動画は必ず別ファイルに保存
+✓ 推論時間制御：処理時間が向上する場合のみ上書き
+✓ 重複防止：同じ動画・同じ設定での無駄な再処理を防止
+✓ 履歴管理：処理履歴をJSONファイルで永続化
+
+【従来方式の特徴】（無効時）
+✓ シンプルな処理フロー
+✓ 毎回クリーンスタート
+✓ 固定ファイル名での出力
+
+【ファイル構成例】
+スマートファイル管理有効時:
+videos/
+├── output_sample_video_a1b2c3d4_advanced_posture_detection.mp4
+├── output_test_data_x1y2z3w4_advanced_posture_detection.mp4
+
+data/
+├── enhanced_detection_log_sample_video_a1b2c3d4.csv
+├── enhanced_detection_log_test_data_x1y2z3w4.csv
+├── frame_results_sample_video_a1b2c3d4.csv
+├── frame_results_test_data_x1y2z3w4.csv
+└── video_processing_history.json
+
+従来方式:
+videos/
+├── output_sample_video_advanced_posture_detection.mp4
+├── output_test_data_advanced_posture_detection.mp4
+
+data/
+├── enhanced_detection_log_sample_video.csv
+├── enhanced_detection_log_test_data.csv
+├── frame_results_sample_video.csv
+└── frame_results_test_data.csv
+
 【設定のカスタマイズ】
 main.py の設定セクションを編集してください：
 
-DISTORTION_CONFIG = {
-    "k1": -0.30,      # 歪み補正の強さ（負の値で逆バレル補正）
-    "alpha": 0.4,     # 切り抜き vs 画質のバランス
-    "apply_correction": True,  # 歪み補正の有効/無効
-}
+# スマートファイル管理の有効/無効
+SMART_FILE_MANAGEMENT_CONFIG = {{
+    "enabled": True,  # True: スマート管理, False: 従来方式
+    "force_process": False,  # 強制処理
+}}
 
-VIDEO_CONFIG = {
+DISTORTION_CONFIG = {{
+    "k1": -0.20,      # 歪み補正の強さ
+    "alpha": 0.8,     # 切り抜き vs 画質のバランス
+    "apply_correction": True,  # 歪み補正の有効/無効
+}}
+
+VIDEO_CONFIG = {{
     "show_preview": True,      # プレビュー表示
     "enable_enhanced_csv": True,  # 詳細CSV出力
-}
-
-【主な改良点】
-✓ 詳細な状態分類（6つの状態）
-✓ 前向き・後ろ向き自動判定
-✓ 高精度5係数歪み補正
-✓ 機械学習用拡張CSV出力
-✓ 統計情報とデバッグ支援
+}}
 
 【操作方法】
 - プレビュー表示中は 'q' キーで終了
-- 全ての結果は videos/ と data/ ディレクトリに保存されます
+- 再処理確認で 'y' を入力すると強制実行
+- 全ての結果は設定に応じて自動保存されます
 """)
 
 if __name__ == "__main__":
