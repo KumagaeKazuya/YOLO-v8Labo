@@ -185,42 +185,6 @@ def process_with_smart_management(processor, video_path):
 
     return success, file_paths
 
-def process_with_smart_management(processor, video_path):
-    """スマートファイル管理による動画処理（品質劣化防止機能強化）"""
-    logger.info("=== スマートファイル管理による処理開始 ===")
-    logger.info("主な機能:")
-    logger.info("  ✓ 動画別ファイル管理（ハッシュベース）")
-    logger.info("  ✓ 推論時間による自動上書き制御")
-    logger.info("  ✓ 処理履歴の永続化")
-    logger.info("  ✓ 重複処理の自動検出・防止")
-    logger.info("  ✓ 品質劣化防止機能（推定時間短縮時の保護）")
-    logger.info(f"  ✓ 品質閾値: {SMART_FILE_MANAGEMENT_CONFIG['quality_threshold']:.1f}倍")
-    logger.info(f"  ✓ CSV保護: 動画・基本CSV・拡張CSV全て同時保護")
-
-    # スマートファイル管理のインスタンスに品質閾値を設定
-    processor.file_manager.quality_threshold = SMART_FILE_MANAGEMENT_CONFIG["quality_threshold"]
-
-    # スマートファイル管理による動画処理実行
-    success = processor.process_video_with_smart_management(
-        input_path=video_path,
-        show_preview=VIDEO_CONFIG["show_preview"],
-        apply_correction=DISTORTION_CONFIG["apply_correction"],
-        force_process=SMART_FILE_MANAGEMENT_CONFIG["force_process"]
-    )
-
-    # 生成されたファイルパスを取得（スマートファイル管理から）
-    file_paths = {}
-    if hasattr(processor, 'file_manager'):
-        try:
-            estimated_time = processor.estimate_processing_time(video_path)
-            _, _, file_paths = processor.file_manager.should_process_video(
-                video_path, estimated_time, False
-            )
-        except Exception as e:
-            logger.warning(f"ファイルパス取得エラー: {e}")
-
-    return success, file_paths
-
 # process_with_traditional_method 関数を追加
 def process_with_traditional_method(processor, video_path):
     """従来方式での動画処理"""
