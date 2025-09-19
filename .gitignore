@@ -34,6 +34,8 @@ cython_debug/
 *.mp4
 *.avi
 *.mov
+*.json
+*.jpg
 
 # csvの分析ファイルはプロジェクトに含めない
 data/*.csv
